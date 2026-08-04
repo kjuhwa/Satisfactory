@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Satisfactory 공장 플래너</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>⚙ Satisfactory 공장 플래너</h1>
+  <p class="sub">목표 아이템과 생산량(개/분)을 입력하면 필요한 기계·원자재·전력을 계산합니다 — 1.0 전체 레시피 (대체 레시피 포함)</p>
+</header>
+
+<main>
+  <section class="panel" id="targets-panel">
+    <h2>생산 목표</h2>
+    <div id="target-list"></div>
+    <div class="target-add">
+      <input id="item-search" list="item-datalist" placeholder="아이템 검색 (한글/영문, 예: 철판 또는 Iron Plate)" autocomplete="off">
+      <datalist id="item-datalist"></datalist>
+      <input id="rate-input" type="number" min="0.1" step="any" value="10" title="분당 생산량">
+      <span class="unit">/분</span>
+      <button id="add-target">추가</button>
+    </div>
+  </section>
+
+  <section class="panel" id="summary-panel" hidden>
+    <h2>요약</h2>
+    <div class="summary-grid">
+      <div class="stat"><div class="stat-label">총 전력</div><div class="stat-value" id="total-power">0 MW</div></div>
+      <div class="stat"><div class="stat-label">총 기계 수</div><div class="stat-value" id="total-machines">0</div></div>
+    </div>
+    <div class="summary-cols">
+      <div>
+        <h3>원자재 (분당)</h3>
+        <table id="raw-table"></table>
+      </div>
+      <div>
+        <h3>기계 목록</h3>
+        <table id="machine-table"></table>
+      </div>
+      <div id="byproduct-col" hidden>
+        <h3>부산물 (분당)</h3>
+        <table id="byproduct-table"></table>
+        <p class="note">부산물은 자동으로 재사용 계산되지 않습니다. 싱크 처리 또는 별도 라인 연결이 필요합니다.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel" id="tree-panel" hidden>
+    <h2>생산 트리 <span class="hint">— 각 단계의 레시피를 바꾸면 즉시 재계산됩니다 (★ = 대체 레시피)</span></h2>
+    <div id="tree-root"></div>
+  </section>
+</main>
+
+<footer>데이터: Satisfactory 1.0 (SatisfactoryTools 추출 데이터, 한국어 명칭: satisfactory-calculator.com) · 기계 수는 100% 클럭 기준</footer>
+
+<script src="data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

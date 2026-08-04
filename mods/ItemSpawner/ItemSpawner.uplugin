@@ -1,0 +1,33 @@
+{
+  "FileVersion": 3,
+  "Version": 1,
+  "VersionName": "1.0.0",
+  "SemVersion": "1.0.0",
+  "FriendlyName": "Item Spawner",
+  "Description": "채팅 명령어로 아이템을 인벤토리에 생성하는 치트 모드. /give <아이템> [수량]",
+  "Category": "Modding",
+  "CreatedBy": "kjuhwa",
+  "CreatedByURL": "",
+  "DocsURL": "",
+  "MarketplaceURL": "",
+  "SupportURL": "",
+  "CanContainContent": true,
+  "IsBetaVersion": false,
+  "IsExperimentalVersion": false,
+  "Installed": false,
+  "AcceptsAnyRemoteVersion": true,
+  "Modules": [
+    {
+      "Name": "ItemSpawner",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "SML",
+      "SemVersion": "^3.11.0",
+      "Enabled": true
+    }
+  ]
+}

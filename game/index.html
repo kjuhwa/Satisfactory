@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Satisfactory 방치형 공장</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="head-left">
+    <h1>⚙ Satisfactory 방치형 공장</h1>
+    <p class="sub">실제 1.0 레시피·전력 밸런스로 돌아가는 미니 자동화 게임</p>
+  </div>
+  <div class="head-right">
+    <div class="power-box">
+      <div class="power-label">전력 <span id="power-text">20 / 20 MW</span></div>
+      <div class="power-bar"><div id="power-fill"></div></div>
+    </div>
+    <button id="btn-save" class="ghost">저장</button>
+    <button id="btn-reset" class="ghost danger">초기화</button>
+  </div>
+</header>
+
+<div id="banner" hidden></div>
+
+<main>
+  <section class="col">
+    <div class="panel" id="milestone-panel">
+      <h2>마일스톤</h2>
+      <div id="milestone-body"></div>
+    </div>
+    <div class="panel">
+      <h2>수동 채집</h2>
+      <div id="gather-buttons" class="btn-wrap"></div>
+    </div>
+    <div class="panel">
+      <h2>수동 제작 <span class="hint">기계 없이 한 사이클씩 제작</span></h2>
+      <input id="hand-search" placeholder="레시피 검색 (한글/영문)" autocomplete="off">
+      <div id="hand-list"></div>
+      <div id="hand-req"></div>
+      <div class="btn-wrap">
+        <button id="hand-craft-1">제작 ×1</button>
+        <button id="hand-craft-10">제작 ×10</button>
+      </div>
+      <div id="hand-info" class="hint"></div>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="panel">
+      <h2>채굴 · 발전</h2>
+      <div id="extractor-list"></div>
+    </div>
+    <div class="panel">
+      <h2>생산 라인</h2>
+      <div class="line-add">
+        <select id="line-machine"></select>
+        <select id="line-recipe"></select>
+        <button id="line-add-btn">라인 추가</button>
+      </div>
+      <div id="line-list"></div>
+    </div>
+  </section>
+
+  <section class="col">
+    <div class="panel">
+      <h2>재고</h2>
+      <table id="stock-table"></table>
+    </div>
+  </section>
+</main>
+
+<footer>수치 출처: Satisfactory 1.0 실제 데이터 (레시피·전력·건설 비용·발전기). 간략화: 노드 순도/오버클럭 없음, 유휴 기계도 전력 소비, 질소는 간이 추출기.</footer>
+
+<script src="../web/data.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
