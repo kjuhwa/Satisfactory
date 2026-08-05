@@ -24,8 +24,8 @@
 
 <div id="banner" hidden></div>
 
-<main>
-  <section class="col">
+<div id="layout">
+<aside id="sidebar">
     <div class="panel" id="milestone-panel">
       <h2>마일스톤</h2>
       <div id="milestone-body"></div>
@@ -45,9 +45,6 @@
       </div>
       <div id="hand-info" class="hint"></div>
     </div>
-  </section>
-
-  <section class="col">
     <div class="panel">
       <h2>발전</h2>
       <div id="extractor-list"></div>
@@ -56,8 +53,7 @@
       <h2>재고</h2>
       <table id="stock-table"></table>
     </div>
-  </section>
-</main>
+</aside>
 
 <section class="panel" id="factory-panel">
   <h2>공장 배치 <span class="hint">노드를 드래그로 배치하고, 출력 포트(오른쪽 ●)에서 입력 포트(왼쪽 ●)로 드래그해 연결하세요. 연결선을 클릭하면 삭제. 출하 노드에 연결된 아이템만 재고로 들어옵니다.</span></h2>
@@ -80,8 +76,9 @@
     </div>
   </div>
 </section>
+</div>
 
-<footer>수치 출처: Satisfactory 1.0 실제 데이터 (레시피·전력·건설 비용·발전기). 간략화: 노드 순도/오버클럭 없음, 유휴 기계도 전력 소비, 질소는 간이 추출기.</footer>
+<footer>수치 출처: Satisfactory 1.0 실제 데이터 (레시피·전력·건설 비용·발전기). 간략화: 노드 순도/오버클럭 없음, 유휴 기계도 전력 소비, 질소는 간이 추출기. · 캔버스 빈 곳을 잡고 드래그하면 화면이 이동합니다.</footer>
 
 <script src="../web/data.js"></script>
 <script src="game.js"></script>

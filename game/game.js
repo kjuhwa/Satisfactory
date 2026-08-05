@@ -780,6 +780,15 @@ function initFactoryEvents() {
       drag.dx = pos.x - n.x;
       drag.dy = pos.y - n.y;
       e.preventDefault();
+    } else if (!e.target.closest('.fnode')) {
+      // 빈 캔버스: 잡고 드래그하면 화면 이동 (패닝)
+      drag.mode = 'pan';
+      drag.px = e.clientX;
+      drag.py = e.clientY;
+      drag.sx = wrap.scrollLeft;
+      drag.sy = wrap.scrollTop;
+      wrap.style.cursor = 'grabbing';
+      e.preventDefault();
     }
   });
 
@@ -796,6 +805,9 @@ function initFactoryEvents() {
       const b = canvasPos(e);
       const pending = $('pending-edge');
       if (a && pending) pending.setAttribute('d', edgePath(a, b));
+    } else if (drag.mode === 'pan') {
+      wrap.scrollLeft = drag.sx - (e.clientX - drag.px);
+      wrap.scrollTop = drag.sy - (e.clientY - drag.py);
     }
   });
 
@@ -808,6 +820,7 @@ function initFactoryEvents() {
       }
     }
     if (drag.mode === 'node') save();
+    if (drag.mode === 'pan') wrap.style.cursor = '';
     drag.mode = null;
     drag.node = null;
     if (drag.pendingRebuild) { drag.pendingRebuild = false; rebuild(); }
