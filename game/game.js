@@ -794,6 +794,8 @@ function initFactoryEvents() {
   };
 
   wrap.addEventListener('pointerdown', e => {
+    // 연결선 클릭(삭제)은 패닝으로 가로채지 않는다
+    if (e.target.closest && e.target.closest('.edge-hit')) return;
     const fnode = e.target.closest('.fnode');
     const interactive = e.target.closest('button, select, input, .craft');
     const inPort = e.target.closest('.port');
