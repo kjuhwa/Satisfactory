@@ -788,7 +788,9 @@ function initFactoryEvents() {
   };
 
   wrap.addEventListener('pointerdown', e => {
-    const head = e.target.closest('.fnode-head');
+    const fnode = e.target.closest('.fnode');
+    const interactive = e.target.closest('button, select, input');
+    const inPort = e.target.closest('.port');
     const dot = portDotAt(e.target);
     if (dot && dot.dataset.dir === 'out') {
       drag.mode = 'edge';
@@ -800,9 +802,9 @@ function initFactoryEvents() {
       svg.append(pending);
       wrap.setPointerCapture(e.pointerId); // 캔버스 밖에서 놓아도 pointerup을 받도록
       e.preventDefault();
-    } else if (head) {
-      const box = head.closest('.fnode');
-      const n = nodeById(+box.dataset.id);
+    } else if (fnode && !interactive && !inPort) {
+      // 노드는 버튼·포트를 제외한 어디를 잡아도 이동 (커서 모양과 일치)
+      const n = nodeById(+fnode.dataset.id);
       const pos = canvasPos(e);
       drag.mode = 'node';
       drag.node = n;
@@ -810,7 +812,7 @@ function initFactoryEvents() {
       drag.dy = pos.y - n.y;
       wrap.setPointerCapture(e.pointerId);
       e.preventDefault();
-    } else if (!e.target.closest('.fnode')) {
+    } else if (!fnode) {
       // 빈 캔버스: 잡고 드래그하면 화면 이동 (패닝)
       drag.mode = 'pan';
       drag.px = e.clientX;

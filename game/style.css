@@ -203,7 +203,10 @@ select {
   box-shadow: 0 2px 8px rgba(0,0,0,.4);
   user-select: none;
   font-size: 12px;
+  cursor: grab; /* 버튼·포트 외엔 어디든 잡고 이동 가능 */
 }
+.fnode:active { cursor: grabbing; }
+.fnode .port { cursor: crosshair; }
 .fnode.sink { border-color: #4a5c3f; }
 .fnode-head {
   display: flex; align-items: center; gap: 6px;
