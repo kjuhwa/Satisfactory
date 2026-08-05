@@ -724,6 +724,26 @@ function buildFactory() {
     foot.append(del);
     box.append(foot);
 
+    // 기계 1대 건설에 필요한 재료 (충족=초록/부족=빨강, 호버 시 보유량)
+    if (n.type !== 'sink') {
+      const costRow = el('div', 'fnode-cost');
+      costRow.append(el('span', 'hint', '건설'));
+      const minis = Object.entries(def.cost).map(([cn, need]) => {
+        const chip = el('span', 'chip-mini');
+        chip.append(iconEl(cn, 's'), el('b', null, need));
+        costRow.append(chip);
+        return { chip, cn, need };
+      });
+      box.append(costRow);
+      onUpdate(() => {
+        for (const m of minis) {
+          const have = stockOf(m.cn);
+          m.chip.className = 'chip-mini ' + (have >= m.need ? 'ok' : 'no');
+          m.chip.title = `${iname(m.cn)} — 보유 ${fmtN(have)} / 필요 ${m.need}`;
+        }
+      });
+    }
+
     onUpdate(() => {
       if (n.type === 'sink') { eff.textContent = ''; return; }
       const pct = Math.round((n.eff || 0) * 100);

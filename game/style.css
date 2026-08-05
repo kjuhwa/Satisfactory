@@ -241,6 +241,18 @@ select {
 .fnode-foot .cnt { font-weight: 700; color: var(--accent); min-width: 22px; text-align: center; }
 .fnode-foot button { padding: 1px 8px; font-size: 12px; }
 .fnode-foot .del { margin-left: auto; }
+.fnode-cost {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 3px;
+  padding: 0 8px 6px;
+}
+.chip-mini {
+  display: inline-flex; align-items: center; gap: 2px;
+  font-size: 10.5px; font-variant-numeric: tabular-nums;
+  border: 1px solid var(--border); border-radius: 8px;
+  padding: 0 5px; background: var(--panel2);
+}
+.chip-mini.ok { color: var(--good); border-color: #3f5c3f; }
+.chip-mini.no { color: var(--bad); border-color: #5c3f3b; }
 
 /* 재고 */
 #stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
