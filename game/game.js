@@ -849,6 +849,23 @@ function initFactoryEvents() {
   wrap.addEventListener('pointerleave', e => { if (drag.mode === 'edge') endDrag(e); });
 }
 
+/* 재고 클릭 → 해당 아이템의 수동 제작 레시피 자동 선택 */
+function selectHandRecipeFor(cn) {
+  const r = HAND_RECIPES.find(x => x.out[0][0] === cn)
+    || HAND_RECIPES.find(x => x.out.some(o => o[0] === cn));
+  if (!r) return false;
+  handSelected = r.id;
+  $('hand-search').value = '';
+  $('hand-info').textContent = '';
+  rebuild();
+  const sel = $('hand-list').querySelector('.hand-item.sel');
+  if (sel) sel.scrollIntoView({ block: 'center' });
+  const panel = $('hand-list').closest('.panel');
+  if (panel) panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  return true;
+}
+const handCraftable = cn => HAND_RECIPES.some(x => x.out.some(o => o[0] === cn));
+
 /* --- 재고 --- */
 let stockKeys = '';
 function visibleStock() {
@@ -871,6 +888,11 @@ function buildStock() {
     const nameTd = el('td');
     nameTd.append(iconEl(cn, 's'), ' ' + iname(cn));
     tr.append(nameTd);
+    if (handCraftable(cn)) {
+      tr.classList.add('clickable');
+      tr.title = '클릭하면 수동 제작에서 이 아이템의 레시피가 선택됩니다';
+      tr.addEventListener('click', () => selectHandRecipeFor(cn));
+    }
     const num = el('td', 'num');
     const rate = el('td', 'rate');
     tr.append(num, rate);

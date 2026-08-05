@@ -263,5 +263,7 @@ select {
 .rate-down { color: var(--bad); }
 .rate-zero { color: var(--muted); }
 #stock-table .raw td:first-child { color: var(--raw); }
+#stock-table tr.clickable { cursor: pointer; }
+#stock-table tr.clickable:hover td { background: rgba(250, 149, 73, .1); }
 
 footer { padding: 6px 20px 10px; color: var(--muted); font-size: 11px; flex: none; }
