@@ -779,9 +779,17 @@ function initFactoryEvents() {
   const wrap = $('canvas-wrap');
   const svg = $('edge-svg');
 
+  // 포트는 점이 작으므로 행 전체를 드래그 시작/드롭 대상으로 허용
+  const portDotAt = target => {
+    if (!target || !target.closest) return null;
+    const direct = target.closest('.port .dot');
+    if (direct) return direct;
+    return target.closest('.port')?.querySelector('.dot') || null;
+  };
+
   wrap.addEventListener('pointerdown', e => {
     const head = e.target.closest('.fnode-head');
-    const dot = e.target.closest('.port .dot');
+    const dot = portDotAt(e.target);
     if (dot && dot.dataset.dir === 'out') {
       drag.mode = 'edge';
       drag.fromNode = +dot.dataset.node;
@@ -790,6 +798,7 @@ function initFactoryEvents() {
       pending.classList.add('pending');
       pending.id = 'pending-edge';
       svg.append(pending);
+      wrap.setPointerCapture(e.pointerId); // 캔버스 밖에서 놓아도 pointerup을 받도록
       e.preventDefault();
     } else if (head) {
       const box = head.closest('.fnode');
@@ -799,6 +808,7 @@ function initFactoryEvents() {
       drag.node = n;
       drag.dx = pos.x - n.x;
       drag.dy = pos.y - n.y;
+      wrap.setPointerCapture(e.pointerId);
       e.preventDefault();
     } else if (!e.target.closest('.fnode')) {
       // 빈 캔버스: 잡고 드래그하면 화면 이동 (패닝)
@@ -808,11 +818,14 @@ function initFactoryEvents() {
       drag.sx = wrap.scrollLeft;
       drag.sy = wrap.scrollTop;
       wrap.style.cursor = 'grabbing';
+      wrap.setPointerCapture(e.pointerId);
       e.preventDefault();
     }
   });
 
   wrap.addEventListener('pointermove', e => {
+    // 버튼이 눌려있지 않은데 드래그 상태가 남아있으면 즉시 해제 (고착 방지 안전장치)
+    if (drag.mode && e.buttons === 0) { endDrag(e); return; }
     if (drag.mode === 'node' && drag.node) {
       const pos = canvasPos(e);
       drag.node.x = Math.max(0, Math.min(2200, pos.x - drag.dx));
@@ -834,7 +847,9 @@ function initFactoryEvents() {
   const endDrag = e => {
     if (drag.mode === 'edge') {
       $('pending-edge')?.remove();
-      const dot = e.target.closest ? e.target.closest('.port .dot') : null;
+      // 포인터 캡처 중에는 e.target이 wrap 으로 고정되므로 실제 좌표의 요소를 찾는다
+      const at = document.elementFromPoint(e.clientX, e.clientY);
+      const dot = portDotAt(at);
       if (dot && dot.dataset.dir === 'in') {
         addEdge(drag.fromNode, drag.fromItem, +dot.dataset.node, dot.dataset.item);
       }
@@ -846,7 +861,7 @@ function initFactoryEvents() {
     if (drag.pendingRebuild) { drag.pendingRebuild = false; rebuild(); }
   };
   wrap.addEventListener('pointerup', endDrag);
-  wrap.addEventListener('pointerleave', e => { if (drag.mode === 'edge') endDrag(e); });
+  wrap.addEventListener('pointercancel', endDrag);
 }
 
 /* 재고 클릭 → 해당 아이템의 수동 제작 레시피 자동 선택 */
