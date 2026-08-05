@@ -278,6 +278,7 @@ function chipRow(cost) {
     const chip = el('span', 'chip');
     const val = el('b');
     chip.append(iconEl(cn, 's'), el('span', null, iname(cn)), val);
+    makeCraftLink(chip, cn);
     box.append(chip);
     return { chip, val, cn, n };
   });
@@ -285,7 +286,8 @@ function chipRow(cost) {
     for (const c of chips) {
       const have = stockOf(c.cn);
       c.val.textContent = `${fmtN(have)}/${c.n}`;
-      c.chip.className = 'chip ' + (have >= c.n ? 'ok' : 'no');
+      c.chip.classList.toggle('ok', have >= c.n);
+      c.chip.classList.toggle('no', have < c.n);
     }
   };
   return { box, refresh };
@@ -307,6 +309,7 @@ function buildMilestone() {
     const row = el('div', 'ms-cost');
     const label = el('span');
     label.append(iconEl(cn, 's'), ' ' + iname(cn));
+    makeCraftLink(label, cn);
     row.append(label);
     const val = el('span');
     row.append(val);
@@ -731,6 +734,7 @@ function buildFactory() {
       const minis = Object.entries(def.cost).map(([cn, need]) => {
         const chip = el('span', 'chip-mini');
         chip.append(iconEl(cn, 's'), el('b', null, need));
+        makeCraftLink(chip, cn);
         costRow.append(chip);
         return { chip, cn, need };
       });
@@ -738,8 +742,10 @@ function buildFactory() {
       onUpdate(() => {
         for (const m of minis) {
           const have = stockOf(m.cn);
-          m.chip.className = 'chip-mini ' + (have >= m.need ? 'ok' : 'no');
-          m.chip.title = `${iname(m.cn)} — 보유 ${fmtN(have)} / 필요 ${m.need}`;
+          m.chip.classList.toggle('ok', have >= m.need);
+          m.chip.classList.toggle('no', have < m.need);
+          m.chip.title = `${iname(m.cn)} — 보유 ${fmtN(have)} / 필요 ${m.need}`
+            + (m.chip.classList.contains('craft') ? ' · 클릭하면 수동 제작 선택' : '');
         }
       });
     }
@@ -789,7 +795,7 @@ function initFactoryEvents() {
 
   wrap.addEventListener('pointerdown', e => {
     const fnode = e.target.closest('.fnode');
-    const interactive = e.target.closest('button, select, input');
+    const interactive = e.target.closest('button, select, input, .craft');
     const inPort = e.target.closest('.port');
     const dot = portDotAt(e.target);
     if (dot && dot.dataset.dir === 'out') {
@@ -866,7 +872,14 @@ function initFactoryEvents() {
   wrap.addEventListener('pointercancel', endDrag);
 }
 
-/* 재고 클릭 → 해당 아이템의 수동 제작 레시피 자동 선택 */
+/* 재료 칩/재고 클릭 → 해당 아이템의 수동 제작 레시피 자동 선택 */
+function makeCraftLink(elem, cn) {
+  if (!handCraftable(cn)) return;
+  elem.classList.add('craft');
+  elem.title = `${iname(cn)} — 클릭하면 수동 제작에서 선택됩니다`;
+  elem.addEventListener('click', () => selectHandRecipeFor(cn));
+}
+
 function selectHandRecipeFor(cn) {
   const r = HAND_RECIPES.find(x => x.out[0][0] === cn)
     || HAND_RECIPES.find(x => x.out.some(o => o[0] === cn));

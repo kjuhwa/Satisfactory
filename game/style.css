@@ -257,6 +257,10 @@ select {
 .chip-mini.ok { color: var(--good); border-color: #3f5c3f; }
 .chip-mini.no { color: var(--bad); border-color: #5c3f3b; }
 
+/* 클릭하면 수동 제작 선택되는 재료 */
+.craft { cursor: pointer; }
+.craft:hover { filter: brightness(1.35); text-decoration: underline; }
+
 /* 재고 */
 #stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 #stock-table td { padding: 2px 4px; border-bottom: 1px solid var(--border); }
