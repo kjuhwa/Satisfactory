@@ -208,8 +208,11 @@ function tick(dtMin) {
   }
 
   // 4) 채굴기 노드: 출력 버퍼 공간만큼 생산 (막히면 정지 = 배압)
+  const hasInEdge = (id, item) => state.edges.some(e => e.to.node === id && e.to.item === item);
+  const hasOutEdge = (id, item) => state.edges.some(e => e.from.node === id && e.from.item === item);
   for (const n of state.nodes) {
-    if (n.type !== 'miner' || n.count <= 0) { if (n.type === 'miner') n.eff = 0; continue; }
+    if (n.type !== 'miner') continue;
+    if (n.count <= 0) { n.eff = 0; n.why = '기계 없음 — + 로 구매'; continue; }
     const def = nodeDef(n);
     const out = def.outs[0];
     const cap = BUF_CAP * n.count;
@@ -218,29 +221,62 @@ function tick(dtMin) {
     const make = Math.min(want, space);
     n.buf.out[out.item] = (n.buf.out[out.item] || 0) + make;
     n.eff = want > 0 ? powerEff * (make / want) : 0;
+    n.why = null;
+    if (n.eff < 0.99) {
+      if (space < want) {
+        n.why = hasOutEdge(n.id, out.item)
+          ? `출력 정체: ${iname(out.item)} — 하류 처리량 부족`
+          : `출력 미연결: ${iname(out.item)} — 포트를 연결하세요`;
+      } else if (powerEff < 0.99) {
+        n.why = '전력 부족 — 발전기를 늘리세요';
+      }
+    }
   }
 
   // 5) 기계 노드: 입력 버퍼 재료 + 출력 공간만큼 가동
   for (const n of state.nodes) {
     if (n.type !== 'machine') continue;
-    if (n.count <= 0) { n.eff = 0; continue; }
+    if (n.count <= 0) { n.eff = 0; n.why = '기계 없음 — + 로 구매'; continue; }
     const def = nodeDef(n);
     const run = n.count * powerEff;
-    if (run <= 0) { n.eff = 0; continue; }
+    if (run <= 0) { n.eff = 0; n.why = '전력 부족 — 발전기를 늘리세요'; continue; }
     let frac = 1;
+    let limit = null; // 가장 크게 발목 잡는 요소
     for (const p of def.ins) {
       const need = p.rate * run * dtMin;
-      if (need > 0) frac = Math.min(frac, (n.buf.in[p.item] || 0) / need);
+      if (need > 0) {
+        const f = (n.buf.in[p.item] || 0) / need;
+        if (f < frac) { frac = f; limit = { kind: 'in', item: p.item }; }
+      }
     }
     const cap = BUF_CAP * n.count;
     for (const p of def.outs) {
       const make = p.rate * run * dtMin;
-      if (make > 0) frac = Math.min(frac, Math.max(0, cap - (n.buf.out[p.item] || 0)) / make);
+      if (make > 0) {
+        const f = Math.max(0, cap - (n.buf.out[p.item] || 0)) / make;
+        if (f < frac) { frac = f; limit = { kind: 'out', item: p.item }; }
+      }
     }
     frac = Math.min(1, Math.max(0, frac));
     for (const p of def.ins) n.buf.in[p.item] = Math.max(0, (n.buf.in[p.item] || 0) - p.rate * run * dtMin * frac);
     for (const p of def.outs) n.buf.out[p.item] = (n.buf.out[p.item] || 0) + p.rate * run * dtMin * frac;
     n.eff = powerEff * frac;
+    n.why = null;
+    if (n.eff < 0.99) {
+      if (limit && frac < powerEff) {
+        if (limit.kind === 'in') {
+          n.why = hasInEdge(n.id, limit.item)
+            ? `재료 부족: ${iname(limit.item)} — 공급을 늘리세요`
+            : `입력 미연결: ${iname(limit.item)} — 포트를 연결하세요`;
+        } else {
+          n.why = hasOutEdge(n.id, limit.item)
+            ? `출력 정체: ${iname(limit.item)} — 하류 처리량 부족`
+            : `출력 미연결: ${iname(limit.item)} — 포트를 연결하세요`;
+        }
+      } else if (powerEff < 0.99) {
+        n.why = '전력 부족 — 발전기를 늘리세요';
+      }
+    }
   }
 
   const keys = new Set([...Object.keys(prev), ...Object.keys(state.stock)]);
@@ -664,6 +700,8 @@ function buildFactory() {
     const eff = el('span', 'eff');
     head.append(eff);
     box.append(head);
+    const whyLine = el('div', 'fnode-why');
+    box.append(whyLine);
 
     // 포트
     const body = el('div', 'fnode-body');
@@ -751,10 +789,14 @@ function buildFactory() {
     }
 
     onUpdate(() => {
-      if (n.type === 'sink') { eff.textContent = ''; return; }
+      if (n.type === 'sink') { eff.textContent = ''; whyLine.style.display = 'none'; return; }
       const pct = Math.round((n.eff || 0) * 100);
       eff.textContent = n.count > 0 ? pct + '%' : '휴면';
       eff.style.color = pct >= 99 ? 'var(--good)' : (n.count > 0 ? 'var(--bad)' : 'var(--muted)');
+      const why = pct < 99 ? (n.why || '') : '';
+      whyLine.textContent = why ? '⚠ ' + why : '';
+      whyLine.style.display = why ? '' : 'none';
+      eff.title = why;
     });
 
     layer.append(box);
