@@ -225,8 +225,8 @@ function tick(dtMin) {
     if (n.eff < 0.99) {
       if (space < want) {
         n.why = hasOutEdge(n.id, out.item)
-          ? `출력 정체: ${iname(out.item)} — 하류 처리량 부족`
-          : `출력 미연결: ${iname(out.item)} — 포트를 연결하세요`;
+          ? `출력 정체: ${iname(out.item)} — 다음 단계 기계를 늘리거나 출하로 빼세요`
+          : `출력 미연결: ${iname(out.item)} — 출력 포트를 연결하세요`;
       } else if (powerEff < 0.99) {
         n.why = '전력 부족 — 발전기를 늘리세요';
       }
@@ -266,12 +266,12 @@ function tick(dtMin) {
       if (limit && frac < powerEff) {
         if (limit.kind === 'in') {
           n.why = hasInEdge(n.id, limit.item)
-            ? `재료 부족: ${iname(limit.item)} — 공급을 늘리세요`
-            : `입력 미연결: ${iname(limit.item)} — 포트를 연결하세요`;
+            ? `재료 부족: ${iname(limit.item)} — 이전 단계 생산을 늘리세요`
+            : `입력 미연결: ${iname(limit.item)} — 입력 포트를 연결하세요`;
         } else {
           n.why = hasOutEdge(n.id, limit.item)
-            ? `출력 정체: ${iname(limit.item)} — 하류 처리량 부족`
-            : `출력 미연결: ${iname(limit.item)} — 포트를 연결하세요`;
+            ? `출력 정체: ${iname(limit.item)} — 다음 단계 기계를 늘리거나 출하로 빼세요`
+            : `출력 미연결: ${iname(limit.item)} — 출력 포트를 연결하세요`;
         }
       } else if (powerEff < 0.99) {
         n.why = '전력 부족 — 발전기를 늘리세요';
