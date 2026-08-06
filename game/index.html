@@ -56,6 +56,11 @@
       <h2>재고</h2>
       <table id="stock-table"></table>
     </div>
+    <div class="panel" id="stats-panel" hidden>
+      <h2>공장 통계</h2>
+      <div id="stats-summary" class="hint"></div>
+      <table id="stats-table"></table>
+    </div>
 </aside>
 
 <section class="panel" id="factory-panel">
@@ -63,6 +68,7 @@
   <div class="factory-bar">
     <select id="add-res"></select>
     <select id="add-purity"></select>
+    <select id="add-mtier"></select>
     <button id="add-miner">채굴기 추가</button>
     <span id="miner-cost" class="chips"></span>
     <span class="bar-sep"></span>

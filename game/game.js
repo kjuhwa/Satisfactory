@@ -15,7 +15,14 @@ const EXT = {
   'Desc_LiquidOil_C':  { build: 'Desc_OilPump_C',   rate: 120, power: 40 },
   'Desc_NitrogenGas_C':{ build: 'Desc_OilPump_C',   rate: 60,  power: 40, label: '질소 추출기 (간이)' },
 };
-const MINER = { build: 'Desc_MinerMk1_C', rate: 60, power: 5 };
+// 채굴기 티어 (실제 속도·전력). 같은 매장지에서 더 뽑는 수단
+const MINERS = {
+  1: { build: 'Desc_MinerMk1_C', rate: 60,  power: 5 },
+  2: { build: 'Desc_MinerMk2_C', rate: 120, power: 12 },
+  3: { build: 'Desc_MinerMk3_C', rate: 240, power: 30 },
+};
+const MINER = MINERS[1];
+const minerTierUnlocked = t => t === 1 || (t === 2 && state.ms >= 4) || (t === 3 && state.ms >= 6);
 const GENS = {
   coal: { build: 'Desc_GeneratorCoal_C', power: 75,  burns: [['Desc_Coal_C', 15], ['Desc_Water_C', 45]] },
   fuel: { build: 'Desc_GeneratorFuel_C', power: 250, burns: [['Desc_LiquidFuel_C', 20]] },
@@ -93,13 +100,13 @@ const MS = [
   { name: '석탄 발전', desc: '석탄 발전기 · 물 추출기 · 석탄 채굴 해금',
     cost: { Desc_IronPlateReinforced_C: 20, Desc_Rotor_C: 10, Desc_Cable_C: 50 },
     apply: s => { s.gensUnlocked.push('coal'); s.raws.push('Desc_Coal_C', 'Desc_Water_C'); } },
-  { name: '기초 강철', desc: '주조소 해금 (강철 주괴, 강철 빔, 강철 파이프)',
+  { name: '기초 강철', desc: '주조소 · 채굴기 Mk.2(120/분) 해금',
     cost: { Desc_Cement_C: 100, Desc_Rotor_C: 20, Desc_ModularFrame_C: 10 },
     apply: s => { s.machines.push('Desc_FoundryMk1_C'); } },
   { name: '석유 정제', desc: '정제소 · 패키저 · 원유 추출기 · 연료 발전기 해금',
     cost: { Desc_SteelPlate_C: 50, Desc_SteelPipe_C: 100, Desc_SteelPlateReinforced_C: 20 },
     apply: s => { s.machines.push('Desc_OilRefinery_C', 'Desc_Packager_C'); s.gensUnlocked.push('fuel'); s.raws.push('Desc_LiquidOil_C'); } },
-  { name: '고급 제조', desc: '제조기 해금 + 카테리움 · 원시 수정 · 유황 채굴',
+  { name: '고급 제조', desc: '제조기 · 채굴기 Mk.3(240/분) 해금 + 카테리움 · 원시 수정 · 유황 채굴',
     cost: { Desc_Motor_C: 20, Desc_Plastic_C: 100, Desc_Rubber_C: 100, Desc_SteelPlate_C: 100 },
     apply: s => { s.machines.push('Desc_ManufacturerMk1_C'); s.raws.push('Desc_OreGold_C', 'Desc_RawQuartz_C', 'Desc_Sulfur_C'); } },
   { name: '첨단 소재', desc: '블렌더 · 입자 가속기 · 변환기 · 양자 인코더 · 원자력 발전소 + 보크사이트 · 우라늄 · SAM · 질소 해금',
@@ -226,7 +233,7 @@ const nodeById = id => state.nodes.find(n => n.id === id);
 
 function nodeDef(n) {
   if (n.type === 'miner') {
-    const def = EXT[n.resource] || MINER;
+    const def = EXT[n.resource] || MINERS[n.tier || 1];
     const mult = PURITY[n.purity || 'normal'].mult;
     const c = clockOf(n) / 100;
     return {
@@ -963,7 +970,7 @@ function buildFactoryBar() {
     const mc = $('miner-cost');
     mc.textContent = '';
     if (state.miners && resSel.value) {
-      const def = EXT[resSel.value] || MINER;
+      const def = EXT[resSel.value] || MINERS[+tierSel.value || 1];
       minerChips = chipRow(buildCost(def.build));
       mc.append(minerChips.box);
     } else minerChips = null;
@@ -980,14 +987,37 @@ function buildFactoryBar() {
       gc.append(genChips.box);
     } else genChips = null;
   };
-  resSel.onchange = () => { refreshPurity(); rebuildBarCosts(); };
+  // 채굴기 티어 선택 (광물 자원 전용 — 물·원유·질소는 추출기 고정)
+  const tierSel = $('add-mtier');
+  const refreshTier = () => {
+    const isOre = !EXT[resSel.value];
+    tierSel.style.display = isOre ? '' : 'none';
+    if (!isOre) return;
+    const prev = tierSel.value;
+    tierSel.textContent = '';
+    for (const t of [1, 2, 3]) {
+      const unlocked = minerTierUnlocked(t);
+      const opt = el('option', null,
+        (unlocked ? '' : '🔒 ') + `Mk.${t} (${MINERS[t].rate}/분)`);
+      opt.value = t;
+      opt.disabled = !unlocked;
+      tierSel.append(opt);
+    }
+    if (prev && minerTierUnlocked(+prev)) tierSel.value = prev;
+  };
+  refreshTier();
+
+  resSel.onchange = () => { refreshPurity(); refreshTier(); rebuildBarCosts(); };
   genSel.onchange = () => rebuildBarCosts();
+  tierSel.onchange = () => rebuildBarCosts();
   rebuildBarCosts();
 
   $('add-miner').onclick = () => {
     if (!state.miners || !resSel.value) return;
     const purity = DEPOSITS[resSel.value] ? (puritySel.value || 'normal') : 'normal';
-    addNode({ type: 'miner', resource: resSel.value, purity, count: 0 });
+    const node = { type: 'miner', resource: resSel.value, purity, count: 0 };
+    if (!EXT[resSel.value]) node.tier = +tierSel.value || 1;
+    addNode(node);
   };
   $('add-node').onclick = () => {
     if (!rSel.value) return;
@@ -1115,10 +1145,22 @@ function buildFactory() {
         minus.disabled = n.count <= 0;
       });
     }
+    const dup = el('button', 'ghost', '⧉');
+    dup.title = '노드 복제 (레시피·순도·오버클럭 설정 복사, 기계 수는 0부터)';
+    dup.addEventListener('click', () => {
+      const copy = { type: n.type, count: (n.type === 'sink' || n.type === 'awesink') ? 1 : 0 };
+      if (n.type === 'machine') { copy.recipeId = n.recipeId; copy.clock = n.clock; }
+      if (n.type === 'miner') {
+        copy.resource = n.resource; copy.purity = n.purity;
+        copy.tier = n.tier; copy.clock = n.clock;
+      }
+      if (n.type === 'gen') copy.genKey = n.genKey;
+      addNode(copy);
+    });
     const del = el('button', 'ghost danger del', '✕');
     del.title = '노드 삭제 (기계 비용 환불)';
     del.addEventListener('click', () => removeNode(n.id));
-    foot.append(del);
+    foot.append(dup, del);
     box.append(foot);
 
     // 기계 1대 건설에 필요한 재료 (충족=초록/부족=빨강, 호버 시 보유량)
@@ -1382,6 +1424,56 @@ function buildShop() {
   });
 }
 
+/* --- 공장 통계: 노드 전체의 아이템별 생산/소비 (분당, 가동률 반영) --- */
+function buildStats() {
+  const panel = $('stats-panel');
+  const prodNodes = state.nodes.filter(n => n.type === 'miner' || n.type === 'machine' || n.type === 'gen');
+  const items = new Set();
+  for (const n of prodNodes) {
+    const def = nodeDef(n);
+    for (const p of def.ins) items.add(p.item);
+    for (const p of def.outs) items.add(p.item);
+  }
+  panel.hidden = items.size === 0;
+  if (items.size === 0) return;
+  const list = [...items].sort((a, b) => iname(a).localeCompare(iname(b), 'ko'));
+  const t = $('stats-table');
+  t.textContent = '';
+  const hdr = el('tr');
+  hdr.append(el('th', null, ''), el('th', 'num', '생산/분'), el('th', 'num', '소비/분'));
+  t.append(hdr);
+  const rows = list.map(cn => {
+    const tr = el('tr');
+    const nameTd = el('td');
+    nameTd.append(iconEl(cn, 's'), ' ' + iname(cn));
+    const prodTd = el('td', 'num');
+    const consTd = el('td', 'num');
+    tr.append(nameTd, prodTd, consTd);
+    t.append(tr);
+    return { cn, prodTd, consTd };
+  });
+  onUpdate(() => {
+    const prod = {}, cons = {};
+    let machines = 0;
+    for (const n of prodNodes) {
+      const def = nodeDef(n);
+      const run = n.count * (n.eff || 0);
+      machines += n.count;
+      for (const p of def.outs) prod[p.item] = (prod[p.item] || 0) + p.rate * run;
+      for (const p of def.ins) cons[p.item] = (cons[p.item] || 0) + p.rate * run;
+    }
+    $('stats-summary').textContent =
+      `기계 ${machines}대 · 발전 ${fmtN(lastPower.supply)} MW · 수요 ${fmtN(lastPower.demand)} MW`;
+    for (const r of rows) {
+      const p = prod[r.cn] || 0, c = cons[r.cn] || 0;
+      r.prodTd.textContent = p > 0.05 ? fmtN(p) : '·';
+      r.consTd.textContent = c > 0.05 ? fmtN(c) : '·';
+      r.prodTd.className = 'num ' + (p > c + 0.05 ? 'rate-up' : '');
+      r.consTd.className = 'num ' + (c > p + 0.05 ? 'rate-down' : '');
+    }
+  });
+}
+
 /* --- 재고 --- */
 let stockKeys = '';
 function visibleStock() {
@@ -1445,6 +1537,7 @@ function rebuild() {
   buildFactoryBar();
   buildFactory();
   buildStock();
+  buildStats();
   buildPower();
 }
 

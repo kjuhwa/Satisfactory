@@ -79,7 +79,8 @@ raw = sorted({res['item'] for res in d['resources'].values() if res['item'] in u
 
 # 방치형 게임용: 건물 건설 비용 (휴대용 채굴기는 제작 재료로 환산)
 BUILDINGS = list(used_machines) + [
-    'Desc_MinerMk1_C', 'Desc_WaterPump_C', 'Desc_OilPump_C',
+    'Desc_MinerMk1_C', 'Desc_MinerMk2_C', 'Desc_MinerMk3_C',
+    'Desc_WaterPump_C', 'Desc_OilPump_C',
     'Desc_GeneratorCoal_C', 'Desc_GeneratorFuel_C', 'Desc_GeneratorNuclear_C',
 ]
 build = {}
@@ -100,7 +101,8 @@ for r in d['recipes'].values():
 
 # 추출기·발전기 한국어 이름
 xnames = {}
-for cn in ['Desc_MinerMk1_C', 'Desc_WaterPump_C', 'Desc_OilPump_C',
+for cn in ['Desc_MinerMk1_C', 'Desc_MinerMk2_C', 'Desc_MinerMk3_C',
+           'Desc_WaterPump_C', 'Desc_OilPump_C',
            'Desc_GeneratorCoal_C', 'Desc_GeneratorFuel_C', 'Desc_GeneratorNuclear_C']:
     xnames[cn] = ko_machine(cn) or cn
 

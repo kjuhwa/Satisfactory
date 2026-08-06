@@ -425,6 +425,12 @@ select {
 .rate-up { color: var(--good); }
 .rate-down { color: var(--bad); }
 .rate-zero { color: var(--muted); }
+
+#stats-table { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 6px; }
+#stats-table th { text-align: right; font-size: 10.5px; color: var(--muted); font-weight: normal; padding: 1px 4px; }
+#stats-table th:first-child { text-align: left; }
+#stats-table td { padding: 2px 4px; border-bottom: 1px solid var(--border); }
+#stats-table td.num { text-align: right; font-variant-numeric: tabular-nums; }
 #stock-table .raw td:first-child { color: var(--raw); }
 #stock-table tr.clickable { cursor: pointer; }
 #stock-table tr.clickable:hover td { background: rgba(250, 149, 73, .1); }
