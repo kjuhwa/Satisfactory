@@ -181,6 +181,7 @@ function nodeDef(n) {
 /* ---------- 시뮬레이션 ---------- */
 let lastRates = {};
 let lastPower = { supply: BASE_POWER, demand: 0, eff: 1 };
+let lastEdgeFlow = {}; // edgeId -> 이번 틱에 아이템이 흘렀는지 (연결선 애니메이션용)
 
 function tick(dtMin) {
   const prev = { ...state.stock };
@@ -220,6 +221,7 @@ function tick(dtMin) {
   const powerEff = demand > 0 ? Math.min(1, supply / demand) : 1;
 
   // 3) 연결선으로 아이템 이동 (출력 버퍼 → 입력 버퍼 / 출하 노드는 재고로)
+  lastEdgeFlow = {};
   const groups = {}; // "nodeId|item" -> edges[]
   for (const e of state.edges) {
     (groups[e.from.node + '|' + e.from.item] ??= []).push(e);
@@ -245,6 +247,7 @@ function tick(dtMin) {
         dst.buf.in[item] = (dst.buf.in[item] || 0) + moved;
       }
       from.buf.out[item] -= moved;
+      if (moved > 1e-9) lastEdgeFlow[e.id] = true;
     }
   }
 
@@ -708,7 +711,7 @@ function buildFactory() {
 
   for (const n of state.nodes) {
     const def = nodeDef(n);
-    const box = el('div', 'fnode' + (n.type === 'sink' ? ' sink' : ''));
+    const box = el('div', 'fnode ' + n.type);
     box.style.left = n.x + 'px';
     box.style.top = n.y + 'px';
     box.dataset.id = n.id;
@@ -810,7 +813,14 @@ function buildFactory() {
     }
 
     onUpdate(() => {
-      if (n.type === 'sink') { eff.textContent = ''; whyLine.style.display = 'none'; return; }
+      if (n.type === 'sink') {
+        eff.textContent = '';
+        whyLine.style.display = 'none';
+        // 아이템이 들어오는 동안 흡수 애니메이션
+        box.classList.toggle('working',
+          state.edges.some(e => e.to.node === n.id && lastEdgeFlow[e.id]));
+        return;
+      }
       const pct = Math.round((n.eff || 0) * 100);
       eff.textContent = n.count > 0 ? pct + '%' : '휴면';
       eff.style.color = pct >= 99 ? 'var(--good)' : (n.count > 0 ? 'var(--bad)' : 'var(--muted)');
@@ -818,6 +828,10 @@ function buildFactory() {
       whyLine.textContent = why ? '⚠ ' + why : '';
       whyLine.style.display = why ? '' : 'none';
       eff.title = why;
+      // 가동 중이면 타입별 애니메이션 (효율이 높을수록 빠르게)
+      const working = n.count > 0 && (n.eff || 0) > 0.01;
+      box.classList.toggle('working', working);
+      if (working) box.style.setProperty('--spd', (0.9 / Math.max(0.25, n.eff)).toFixed(2) + 's');
     });
 
     layer.append(box);
@@ -841,6 +855,12 @@ function buildFactory() {
     hit.addEventListener('pointerleave', () => path.classList.remove('hover'));
     svg.append(hit);
   }
+  // 아이템이 흐르는 연결선은 컨베이어처럼 점선이 흘러가게
+  onUpdate(() => {
+    for (const path of svg.querySelectorAll('path.edge')) {
+      path.classList.toggle('flow', !!lastEdgeFlow[+path.dataset.id]);
+    }
+  });
   layoutEdges();
 }
 

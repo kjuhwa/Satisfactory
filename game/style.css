@@ -189,6 +189,12 @@ select {
 #canvas-inner { position: relative; width: 2400px; height: 1400px; }
 #edge-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #edge-svg path.edge { stroke: var(--accent-dim); stroke-width: 2.5; fill: none; pointer-events: none; }
+#edge-svg path.edge.flow {
+  stroke: var(--accent);
+  stroke-dasharray: 7 5;
+  animation: edgeflow .45s linear infinite;
+}
+@keyframes edgeflow { to { stroke-dashoffset: -12; } }
 #edge-svg path.edge.hover { stroke: var(--bad); stroke-width: 3.5; }
 #edge-svg path.edge-hit { stroke: transparent; stroke-width: 14; fill: none; pointer-events: stroke; cursor: pointer; }
 #edge-svg path.pending { stroke: var(--accent); stroke-width: 2; stroke-dasharray: 6 4; fill: none; }
@@ -251,6 +257,76 @@ select {
 .fnode-foot .cnt { font-weight: 700; color: var(--accent); min-width: 22px; text-align: center; }
 .fnode-foot button { padding: 1px 8px; font-size: 12px; }
 .fnode-foot .del { margin-left: auto; }
+
+/* ---- 노드 타입별 가동 애니메이션 (working = 실제 가동 중, --spd = 효율 비례 속도) ---- */
+/* 채굴기: 드릴 진동 */
+.fnode.miner.working .fnode-head .icon {
+  animation: drill var(--spd, .6s) linear infinite;
+}
+@keyframes drill {
+  0%, 100% { transform: translate(0, 0); }
+  20% { transform: translate(-1px, 1px); }
+  40% { transform: translate(1px, -1px) rotate(-4deg); }
+  60% { transform: translate(-1px, -1px); }
+  80% { transform: translate(1px, 1px) rotate(4deg); }
+}
+/* 기계: 부품을 찍어내는 스탬프 동작 */
+.fnode.machine.working .fnode-head .icon {
+  animation: stamp var(--spd, .8s) ease-in-out infinite;
+}
+@keyframes stamp {
+  0%, 100% { transform: scale(1); }
+  35% { transform: scale(1.28) rotate(-7deg); }
+  55% { transform: scale(.92); }
+  70% { transform: scale(1.05); }
+}
+/* 채굴기·기계: 가동 중 은은한 주황 펄스 */
+.fnode.miner.working, .fnode.machine.working {
+  animation: workpulse 2.2s ease-in-out infinite;
+}
+@keyframes workpulse {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, .4); }
+  50% { box-shadow: 0 0 13px rgba(250, 149, 73, .38); }
+}
+/* 발전기: 에너지 발광 + 아이콘 스파크 */
+.fnode.gen.working {
+  animation: genglow 1.5s ease-in-out infinite;
+}
+@keyframes genglow {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, .4); border-color: var(--border); }
+  50% { box-shadow: 0 0 16px rgba(255, 215, 110, .45); border-color: #8a7a45; }
+}
+.fnode.gen.working .fnode-head .icon {
+  animation: spark .8s steps(2) infinite;
+}
+@keyframes spark {
+  0%, 100% { filter: brightness(1); }
+  50% { filter: brightness(1.6) drop-shadow(0 0 4px #ffd76e); }
+}
+/* 출하: 아이템 흡수 스윕 + 초록 펄스 */
+.fnode.sink.working {
+  animation: sinkglow 1.3s ease-in-out infinite;
+}
+@keyframes sinkglow {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, .4); }
+  50% { box-shadow: 0 0 13px rgba(126, 201, 126, .42); }
+}
+.fnode.sink .port { position: relative; overflow: hidden; }
+.fnode.sink.working .port::after {
+  content: '';
+  position: absolute; inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(126, 201, 126, .3), transparent);
+  animation: sweep 1s linear infinite;
+  pointer-events: none;
+}
+@keyframes sweep {
+  from { transform: translateX(-100%); }
+  to { transform: translateX(100%); }
+}
+/* 시스템 설정에서 모션 줄이기를 켠 경우 전부 정지 */
+@media (prefers-reduced-motion: reduce) {
+  .fnode, .fnode *, #edge-svg path { animation: none !important; }
+}
 .fnode-cost {
   display: flex; align-items: center; flex-wrap: wrap; gap: 3px;
   padding: 0 8px 6px;
