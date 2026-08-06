@@ -1073,6 +1073,7 @@ function buildFactoryBar() {
   const awBtn = $('add-awesink');
   awBtn.style.display = state.ms >= 2 ? '' : 'none';
   awBtn.onclick = () => addNode({ type: 'awesink', count: 1 });
+  $('open-plan').onclick = () => openPlanner();
 
   onUpdate(() => {
     $('add-miner').disabled = !state.miners;
@@ -1419,6 +1420,218 @@ function selectHandRecipeFor(cn) {
   return true;
 }
 const handCraftable = cn => HAND_RECIPES.some(x => x.out.some(o => o[0] === cn));
+
+/* ---------- 계획 모드: 목표 → 필요 노드 계산 · 자동 배치 ---------- */
+const producersOf = {};
+for (const r of D.recipes) for (const [cn] of r.out) (producersOf[cn] ??= []).push(r);
+for (const [cn, list] of Object.entries(producersOf)) {
+  const nm = D.items[cn].n;
+  const score = r => (r.alt ? 4 : 0) + (r.out[0][0] !== cn ? 2 : 0) + (r.name !== nm ? 1 : 0);
+  list.sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name));
+}
+
+/** 게임에서 현재 사용 가능한(기계 해금 + 대체 레시피 해금) 레시피 선택 */
+function planPick(item) {
+  return (producersOf[item] || []).find(r =>
+    state.machines.includes(r.machine) && (!r.alt || state.altUnlocked.includes(r.id))) || null;
+}
+
+function computePlan(target, rate) {
+  const recipes = new Map(); // recipeId -> {recipe, machines}
+  const raws = {};
+  const external = {}; // 레시피 잠김·순환 → 수동 공급 필요
+  const expand = (item, need, path) => {
+    if (D.raw.includes(item)) { raws[item] = (raws[item] || 0) + need; return; }
+    const r = planPick(item);
+    if (!r || path.has(item)) { external[item] = (external[item] || 0) + need; return; }
+    const outPerMin = perMin(r, r.out.find(o => o[0] === item)[1]);
+    const m = need / outPerMin;
+    const e = recipes.get(r.id) || { recipe: r, machines: 0 };
+    e.machines += m;
+    recipes.set(r.id, e);
+    const next = new Set(path);
+    next.add(item);
+    for (const [ing, amt] of r.in) expand(ing, m * perMin(r, amt), next);
+  };
+  expand(target, rate, new Set());
+  return { recipes: [...recipes.values()], raws, external };
+}
+
+const bestMinerTier = () => [3, 2, 1].find(minerTierUnlocked);
+
+function openPlanner() {
+  const overlay = el('div', 'alt-overlay');
+  overlay.addEventListener('pointerdown', ev => { if (ev.target === overlay) overlay.remove(); });
+  const card = el('div', 'alt-card plan-card');
+  card.append(el('h3', null, '📋 계획 모드 — 목표를 정하면 필요한 라인을 계산합니다'));
+
+  const search = el('input');
+  search.placeholder = '목표 아이템 검색 (한글/영문)';
+  const listBox = el('div', 'plan-list');
+  const rateRow = el('div', 'plan-rate');
+  const rateInput = el('input');
+  rateInput.type = 'number'; rateInput.min = '0.1'; rateInput.step = 'any'; rateInput.value = '10';
+  rateRow.append(el('span', null, '목표 생산량'), rateInput, el('span', 'hint', '/분'));
+  const result = el('div', 'plan-result');
+  const btnRow = el('div', 'btn-wrap');
+  const buildBtn = el('button', null, '캔버스에 자동 배치');
+  const closeBtn = el('button', 'ghost', '닫기');
+  closeBtn.addEventListener('click', () => overlay.remove());
+  btnRow.append(buildBtn, closeBtn);
+  card.append(search, listBox, rateRow, result, btnRow);
+  overlay.append(card);
+  document.body.append(overlay);
+
+  let selItem = null;
+  let lastPlan = null;
+  const targets = Object.keys(D.items).filter(cn => producersOf[cn])
+    .sort((a, b) => iname(a).localeCompare(iname(b), 'ko'));
+
+  const renderList = () => {
+    const q = search.value.trim().toLowerCase();
+    listBox.textContent = '';
+    let shown = 0;
+    for (const cn of targets) {
+      if (q && !(iname(cn).toLowerCase().includes(q) || D.items[cn].n.toLowerCase().includes(q))) continue;
+      if (++shown > 60) break;
+      const row = el('div', 'hand-item' + (cn === selItem ? ' sel' : ''));
+      const left = el('span');
+      left.append(iconEl(cn, 's'), ' ' + iname(cn));
+      row.append(left, el('span', 'en', D.items[cn].n));
+      row.addEventListener('click', () => { selItem = cn; renderList(); renderPlan(); });
+      listBox.append(row);
+    }
+    if (!shown) listBox.append(el('div', 'hand-empty', '검색 결과가 없습니다'));
+  };
+
+  const renderPlan = () => {
+    result.textContent = '';
+    lastPlan = null;
+    buildBtn.disabled = true;
+    if (!selItem) { result.append(el('div', 'hint', '목표 아이템을 선택하세요.')); return; }
+    const rate = Math.max(0.1, parseFloat(rateInput.value) || 10);
+    const plan = computePlan(selItem, rate);
+    if (plan.recipes.length === 0) {
+      result.append(el('div', 'hint', '현재 해금된 기계로는 이 아이템을 생산할 수 없습니다.'));
+      return;
+    }
+    lastPlan = { ...plan, target: selItem, rate };
+    buildBtn.disabled = false;
+    let power = 0;
+    const t = el('table', 'plan-table');
+    for (const { recipe, machines } of plan.recipes.sort((a, b) => b.machines - a.machines)) {
+      power += linePower(recipe) * machines;
+      const tr = el('tr');
+      const nameTd = el('td');
+      nameTd.append(iconEl(recipe.out[0][0], 's'), ` ${recipe.ko} `, el('span', 'hint', `[${mname(recipe.machine)}]`));
+      tr.append(nameTd, el('td', 'num', `×${Math.ceil(machines - 1e-9)} (${fmtN(machines)})`));
+      t.append(tr);
+    }
+    const tier = bestMinerTier();
+    for (const [cn, r8] of Object.entries(plan.raws).sort((a, b) => b[1] - a[1])) {
+      const def = EXT[cn] || MINERS[tier];
+      const cnt = Math.ceil(r8 / def.rate - 1e-9);
+      power += def.power * (r8 / def.rate);
+      const tr = el('tr', 'plan-raw');
+      const nameTd = el('td');
+      nameTd.append(iconEl(cn, 's'),
+        ` ${iname(cn)} ${fmtN(r8)}/분 `,
+        el('span', 'hint', `(${EXT[cn] ? D.xnames[def.build] : '채굴기 Mk.' + tier} ×${cnt}, 보통 순도 기준)`));
+      tr.append(nameTd, el('td', 'num', ''));
+      t.append(tr);
+    }
+    for (const [cn, r8] of Object.entries(plan.external)) {
+      const tr = el('tr', 'plan-ext');
+      const nameTd = el('td');
+      nameTd.append(iconEl(cn, 's'), ` ${iname(cn)} ${fmtN(r8)}/분 — 레시피 잠김/순환, 별도 공급 필요`);
+      tr.append(nameTd, el('td', 'num', ''));
+      t.append(tr);
+    }
+    result.append(t);
+    const beltWarn = Object.values(plan.raws).some(v => v > 60)
+      || plan.recipes.some(e => e.recipe.out.some(([cn, amt]) => perMin(e.recipe, amt) * e.machines > 60));
+    result.append(el('div', 'hint',
+      `예상 전력 ~${fmtN(power)} MW (100% 클럭)` + (beltWarn ? ' · 60/분 초과 구간은 벨트 업그레이드 필요' : '')));
+  };
+
+  buildBtn.addEventListener('click', () => {
+    if (!lastPlan) return;
+    autoBuildPlan(lastPlan);
+    overlay.remove();
+  });
+  search.oninput = renderList;
+  rateInput.oninput = renderPlan;
+  renderList();
+  renderPlan();
+}
+
+/** 계획을 캔버스 노드·연결로 자동 배치 (기계 수 0 — 구매는 직접) */
+function autoBuildPlan(plan) {
+  // 아이템 깊이 계산 (원자재 0 → 목표가 가장 오른쪽)
+  const depthMemo = {};
+  const depthOf = (item, path) => {
+    if (D.raw.includes(item) || plan.external[item] != null) return 0;
+    if (item in depthMemo) return depthMemo[item];
+    if (path.has(item)) return 0;
+    const r = plan.recipes.find(e => e.recipe.out.some(o => o[0] === item))?.recipe;
+    if (!r) return 0;
+    const next = new Set(path);
+    next.add(item);
+    const d = 1 + Math.max(0, ...r.in.map(([ing]) => depthOf(ing, next)));
+    depthMemo[item] = d;
+    return d;
+  };
+
+  const baseY = Math.max(60, ...state.nodes.map(n => n.y + 220));
+  const colY = {};
+  const place = depth => {
+    colY[depth] = (colY[depth] ?? 0) + 1;
+    return { x: 60 + depth * 280, y: baseY + (colY[depth] - 1) * 190 };
+  };
+  const newNodes = [];
+  const mk = props => {
+    const pos = place(props._depth);
+    const node = { ...props, id: state.seq++, x: pos.x, y: pos.y, buf: { in: {}, out: {} } };
+    delete node._depth;
+    state.nodes.push(node);
+    newNodes.push(node);
+    return node;
+  };
+
+  const producerNode = {}; // item -> nodeId
+  const tier = bestMinerTier();
+  for (const cn of Object.keys(plan.raws)) {
+    const node = { type: 'miner', resource: cn, count: 0, _depth: 0 };
+    if (!EXT[cn]) {
+      node.tier = tier;
+      node.purity = ['pure', 'normal', 'impure'].find(p => depositsLeft(cn, p) > 0) || 'normal';
+    }
+    producerNode[cn] = mk(node).id;
+  }
+  const maxDepth = Math.max(1, ...plan.recipes.map(e => depthOf(e.recipe.out[0][0], new Set())));
+  for (const e of plan.recipes) {
+    const node = mk({ type: 'machine', recipeId: e.recipe.id, count: 0, _depth: Math.max(1, depthOf(e.recipe.out[0][0], new Set())) });
+    for (const [cn] of e.recipe.out) producerNode[cn] ??= node.id;
+  }
+  // 연결: 각 기계의 입력 ← 생산자, 목표 → 출하
+  for (const e of plan.recipes) {
+    const nid = newNodes.find(n => n.recipeId === e.recipe.id).id;
+    for (const [ing] of e.recipe.in) {
+      if (producerNode[ing] != null) {
+        state.edges.push({ id: state.seq++, from: { node: producerNode[ing], item: ing }, to: { node: nid, item: ing } });
+      }
+    }
+  }
+  let sink = state.nodes.find(n => n.type === 'sink');
+  if (!sink) sink = mk({ type: 'sink', count: 1, _depth: maxDepth + 1 });
+  if (producerNode[plan.target] != null) {
+    state.edges.push({ id: state.seq++, from: { node: producerNode[plan.target], item: plan.target }, to: { node: sink.id, item: plan.target } });
+  }
+  save();
+  rebuild();
+  showBanner(`📋 ${iname(plan.target)} ${fmtN(plan.rate)}/분 라인이 배치되었습니다 — 각 노드에서 + 로 기계를 구매하세요.`);
+  setTimeout(() => { $('banner').hidden = true; }, 6000);
+}
 
 /* --- 시작 가이드 (첫 플레이 튜토리얼) --- */
 const TUT_STEPS = [
