@@ -54,11 +54,13 @@ for r in d['recipes'].values():
     for p in r['products']:
         used_items.add(p['item'])
 
+used_items.add('Desc_CrystalShard_C')  # 동력 조각 (오버클럭 재화)
+
 items = {}
 for cn, it in d['items'].items():
     if cn in used_items:
         items[cn] = {'n': it['name'], 'ko': ko_item(cn) or it['name'],
-                     'liq': it['liquid']}
+                     'liq': it['liquid'], 'pts': it.get('sinkPoints', 0)}
 
 machines = {}
 for cn in used_machines:

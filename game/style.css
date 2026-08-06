@@ -311,13 +311,25 @@ select {
   0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, .4); }
   50% { box-shadow: 0 0 13px rgba(126, 201, 126, .42); }
 }
-.fnode.sink .port { position: relative; overflow: hidden; }
-.fnode.sink.working .port::after {
+/* AWESOME 싱크: 보라 펄스 (소각) */
+.fnode.awesink { border-color: #5c4a6e; }
+.fnode.awesink.working {
+  animation: aweglow 1.2s ease-in-out infinite;
+}
+@keyframes aweglow {
+  0%, 100% { box-shadow: 0 2px 8px rgba(0, 0, 0, .4); }
+  50% { box-shadow: 0 0 15px rgba(201, 160, 224, .5); }
+}
+.fnode.sink .port, .fnode.awesink .port { position: relative; overflow: hidden; }
+.fnode.sink.working .port::after, .fnode.awesink.working .port::after {
   content: '';
   position: absolute; inset: 0;
   background: linear-gradient(90deg, transparent, rgba(126, 201, 126, .3), transparent);
   animation: sweep 1s linear infinite;
   pointer-events: none;
+}
+.fnode.awesink.working .port::after {
+  background: linear-gradient(90deg, transparent, rgba(201, 160, 224, .35), transparent);
 }
 @keyframes sweep {
   from { transform: translateX(-100%); }
@@ -369,6 +381,41 @@ select {
 .edge-menu .em-head b { color: var(--accent); margin-left: auto; }
 .edge-menu .em-line { color: var(--muted); font-size: 11.5px; }
 .edge-menu button { font-size: 12.5px; padding: 5px 10px; }
+.edge-menu input[type=range] { width: 100%; accent-color: var(--accent); }
+
+/* 오버클럭 버튼 */
+.fnode-foot .clk { font-size: 10.5px; padding: 1px 6px; }
+.fnode-foot .clk.oc { color: var(--accent); border-color: var(--accent-dim); }
+
+/* AWESOME 상점 */
+.shop-coupons { font-size: 16px; font-weight: 700; color: var(--accent); }
+#shop-body .btn-wrap button { width: 100%; text-align: left; }
+
+/* 대체 레시피 선택 모달 */
+.alt-overlay {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(0, 0, 0, .6);
+  display: flex; align-items: center; justify-content: center;
+}
+.alt-card {
+  background: var(--panel);
+  border: 1px solid var(--accent-dim);
+  border-radius: 12px;
+  padding: 22px 26px;
+  max-width: 520px; width: 92%;
+  display: flex; flex-direction: column; gap: 10px;
+  box-shadow: 0 8px 40px rgba(0, 0, 0, .6);
+}
+.alt-card h3 { margin: 0 0 6px; font-size: 15px; color: var(--accent); }
+.alt-choice {
+  text-align: left;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border);
+  padding: 10px 14px;
+}
+.alt-choice:hover { border-color: var(--accent); }
+.alt-choice .alt-name { font-weight: 700; }
+.alt-choice .alt-io { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
 
 /* 재고 */
 #stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }

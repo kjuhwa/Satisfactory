@@ -55,6 +55,15 @@ const DEPOSITS = {
   Desc_Water_C:        null,
 };
 
+// AWESOME 싱크 · 오버클럭
+const SHARD = 'Desc_CrystalShard_C';
+const POWER_EXP = 1.321929; // 실제 오버클럭 전력 지수
+const ptsOf = cn => (D.items[cn] && D.items[cn].pts) || 0;
+const couponCost = k => 500 * (k + 1) * (k + 2) / 2; // k번째 쿠폰 비용 (점증)
+const clockOf = n => n.clock || 100;
+const shardsFor = clock => Math.max(0, Math.ceil((clock - 100) / 50));
+const lockedAlts = () => D.recipes.filter(r => r.alt && !state.altUnlocked.includes(r.id));
+
 function depositsLeft(resource, purity) {
   const pool = DEPOSITS[resource];
   if (!pool) return Infinity; // 물 등 무한 자원
@@ -119,8 +128,29 @@ function freshState() {
     miners: false,
     ms: 0,
     won: false,
+    sinkPts: 0,
+    coupons: 0,
+    couponsPrinted: 0,
+    altUnlocked: [],
     savedAt: Date.now(),
   };
+}
+
+function withDefaults(s) {
+  s.sinkPts ??= 0;
+  s.coupons ??= 0;
+  s.couponsPrinted ??= 0;
+  if (!Array.isArray(s.altUnlocked)) {
+    // 구버전 저장: 이미 사용 중인 대체 레시피는 해금된 것으로 인정
+    s.altUnlocked = [];
+    for (const n of s.nodes || []) {
+      if (n.type === 'machine') {
+        const r = recipeById[n.recipeId];
+        if (r && r.alt && !s.altUnlocked.includes(r.id)) s.altUnlocked.push(r.id);
+      }
+    }
+  }
+  return s;
 }
 
 const stockOf = cn => state.stock[cn] || 0;
@@ -154,7 +184,7 @@ function load() {
     const raw = localStorage.getItem(SAVE_KEY);
     if (raw) {
       const s = JSON.parse(raw);
-      if (s && Array.isArray(s.nodes)) { migrateSidebarGens(s); return s; }
+      if (s && Array.isArray(s.nodes)) { migrateSidebarGens(s); return withDefaults(s); }
     }
     // v1 (콤보박스 라인) 저장 → 기계·채굴기 비용을 전액 환불하고 그래프 방식으로 이전
     const old = localStorage.getItem(OLD_KEY);
@@ -174,7 +204,7 @@ function load() {
       localStorage.removeItem(OLD_KEY);
       migrateSidebarGens(s2);
       s2._migrated = true;
-      return s2;
+      return withDefaults(s2);
     }
   } catch (e) { /* 손상된 저장은 무시 */ }
   return null;
@@ -188,26 +218,31 @@ function nodeDef(n) {
   if (n.type === 'miner') {
     const def = EXT[n.resource] || MINER;
     const mult = PURITY[n.purity || 'normal'].mult;
+    const c = clockOf(n) / 100;
     return {
       label: (def.label || D.xnames[def.build]),
       iconCn: n.resource,
       ins: [],
-      outs: [{ item: n.resource, rate: def.rate * mult }],
-      power: def.power,
+      outs: [{ item: n.resource, rate: def.rate * mult * c }],
+      power: def.power * Math.pow(c, POWER_EXP),
       cost: buildCost(def.build),
     };
   }
   if (n.type === 'machine') {
     const r = recipeById[n.recipeId];
+    const c = clockOf(n) / 100;
     return {
       label: (r.alt ? '★ ' : '') + r.ko,
       iconCn: r.out[0][0],
-      ins: r.in.map(([cn, amt]) => ({ item: cn, rate: perMin(r, amt) })),
-      outs: r.out.map(([cn, amt]) => ({ item: cn, rate: perMin(r, amt) })),
-      power: linePower(r),
+      ins: r.in.map(([cn, amt]) => ({ item: cn, rate: perMin(r, amt) * c })),
+      outs: r.out.map(([cn, amt]) => ({ item: cn, rate: perMin(r, amt) * c })),
+      power: linePower(r) * Math.pow(c, POWER_EXP),
       cost: buildCost(r.machine),
       machine: r.machine,
     };
+  }
+  if (n.type === 'awesink') {
+    return { label: 'AWESOME 싱크', iconCn: SHARD, ins: [], outs: [], power: 30, cost: {} };
   }
   if (n.type === 'gen') {
     const g = GENS[n.genKey];
@@ -266,8 +301,9 @@ function tick(dtMin) {
   for (const n of state.nodes) demand += nodeDef(n).power * n.count;
   const powerEff = demand > 0 ? Math.min(1, supply / demand) : 1;
 
-  // 3) 연결선으로 아이템 이동 (출력 버퍼 → 입력 버퍼 / 출하 노드는 재고로)
+  // 3) 연결선으로 아이템 이동 (출력 버퍼 → 입력 버퍼 / 출하 = 재고 / 싱크 = 포인트)
   lastEdgeFlow = {};
+  for (const n of state.nodes) if (n.type === 'awesink') n.ptsRate = 0;
   const groups = {}; // "nodeId|item" -> edges[]
   for (const e of state.edges) {
     (groups[e.from.node + '|' + e.from.item] ??= []).push(e);
@@ -287,6 +323,10 @@ function tick(dtMin) {
       if (dst.type === 'sink') {
         moved = Math.min(share, beltMax);
         addStock(item, moved);
+      } else if (dst.type === 'awesink') {
+        moved = Math.min(share, beltMax);
+        state.sinkPts += moved * ptsOf(item);
+        dst.ptsRate = (dst.ptsRate || 0) + moved * ptsOf(item) / dtMin;
       } else {
         const cap = BUF_CAP * Math.max(1, dst.count);
         const space = cap - (dst.buf.in[item] || 0);
@@ -296,6 +336,12 @@ function tick(dtMin) {
       from.buf.out[item] -= moved;
       lastEdgeFlow[e.id] = moved / dtMin; // 분당 흐름량
     }
+  }
+  // 쿠폰 자동 발행
+  while (state.sinkPts >= couponCost(state.couponsPrinted)) {
+    state.sinkPts -= couponCost(state.couponsPrinted);
+    state.couponsPrinted++;
+    state.coupons++;
   }
 
   // 4) 채굴기 노드: 출력 버퍼 공간만큼 생산 (막히면 정지 = 배압)
@@ -621,8 +667,9 @@ function layoutEdges() {
 function addEdge(fromNode, fromItem, toNodeId, toItem) {
   const dst = nodeById(toNodeId);
   if (!dst) return;
-  if (dst.type !== 'sink' && toItem !== fromItem) return;              // 같은 아이템 포트만
-  const finalToItem = dst.type === 'sink' ? fromItem : toItem;
+  const sinkLike = dst.type === 'sink' || dst.type === 'awesink';
+  if (!sinkLike && toItem !== fromItem) return;              // 같은 아이템 포트만
+  const finalToItem = sinkLike ? fromItem : toItem;
   if (fromNode === toNodeId) return;
   if (state.edges.some(e => e.from.node === fromNode && e.from.item === fromItem
       && e.to.node === toNodeId && e.to.item === finalToItem)) return; // 중복 방지
@@ -689,6 +736,84 @@ function openEdgeMenu(ev, edgeId) {
   menu.style.top = Math.min(ev.clientY, window.innerHeight - 180) + 'px';
   document.body.append(menu);
   edgeMenu = menu;
+}
+
+/* 노드 오버클럭 메뉴 */
+function openClockMenu(ev, nodeId) {
+  closeEdgeMenu();
+  const n = nodeById(nodeId);
+  if (!n) return;
+  const menu = el('div', 'edge-menu');
+  const head = el('div', 'em-head');
+  head.append('⚡ 오버클럭', el('b'));
+  menu.append(head);
+  const range = el('input');
+  range.type = 'range'; range.min = 50; range.max = 250; range.step = 25;
+  range.value = clockOf(n);
+  menu.append(range);
+  const info = el('div', 'em-line');
+  const shardInfo = el('div', 'em-line');
+  menu.append(info, shardInfo);
+  const apply = el('button', null, '적용');
+  menu.append(apply);
+  const refresh = () => {
+    const t = +range.value;
+    head.querySelector('b').textContent = t + '%';
+    const pMult = Math.pow(t / 100, POWER_EXP);
+    info.textContent = `속도 ×${(t / 100).toFixed(2)} · 전력 ×${pMult.toFixed(2)}`;
+    const diff = shardsFor(t) - shardsFor(clockOf(n));
+    shardInfo.textContent = diff > 0
+      ? `동력 조각 ${diff}개 필요 (보유 ${fmtN(stockOf(SHARD))})`
+      : diff < 0 ? `동력 조각 ${-diff}개 환불` : '동력 조각 변동 없음';
+    apply.disabled = t === clockOf(n) || (diff > 0 && stockOf(SHARD) < diff);
+  };
+  range.oninput = refresh;
+  refresh();
+  apply.addEventListener('click', () => {
+    const t = +range.value;
+    const diff = shardsFor(t) - shardsFor(clockOf(n));
+    if (diff > 0 && stockOf(SHARD) < diff) return;
+    addStock(SHARD, -diff);
+    n.clock = t;
+    closeEdgeMenu();
+    save();
+    rebuild();
+  });
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - 260) + 'px';
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - 200) + 'px';
+  document.body.append(menu);
+  edgeMenu = menu;
+}
+
+/* 하드 드라이브: 잠긴 대체 레시피 3개 중 택1 */
+function openAltChoice() {
+  const pool = [...lockedAlts()];
+  const picks = [];
+  while (picks.length < 3 && pool.length) {
+    picks.push(pool.splice(Math.floor(Math.random() * pool.length), 1)[0]);
+  }
+  const overlay = el('div', 'alt-overlay');
+  const card = el('div', 'alt-card');
+  card.append(el('h3', null, '💾 하드 드라이브 분석 완료 — 해금할 레시피를 선택하세요'));
+  for (const r of picks) {
+    const b = el('button', 'alt-choice');
+    const name = el('div', 'alt-name');
+    name.append(iconEl(r.out[0][0], 's'), ` ★ ${r.ko} `, el('span', 'hint', `[${mname(r.machine)}]`));
+    const io = r.in.map(([cn, amt]) => `${iname(cn)} ${perMin(r, amt)}`).join(' + ')
+      + ' → ' + r.out.map(([cn, amt]) => `${iname(cn)} ${perMin(r, amt)}`).join(' + ');
+    b.append(name, el('div', 'alt-io', io + ' /분·대'));
+    b.addEventListener('click', () => {
+      state.altUnlocked.push(r.id);
+      overlay.remove();
+      save();
+      rebuild();
+      showBanner(`★ ${r.ko} 레시피 해금!`);
+      setTimeout(() => { $('banner').hidden = true; }, 4000);
+    });
+    card.append(b);
+  }
+  overlay.append(card);
+  document.body.append(overlay);
 }
 
 function removeNode(id) {
@@ -775,14 +900,21 @@ function buildFactoryBar() {
     const list = D.recipes.filter(r => r.machine === mSel.value)
       .sort((a, b) => (a.alt - b.alt) || a.ko.localeCompare(b.ko, 'ko'));
     for (const r of list) {
-      const opt = el('option', null, (r.alt ? '★ ' : '') + r.ko);
+      const locked = r.alt && !state.altUnlocked.includes(r.id);
+      const opt = el('option', null, (locked ? '🔒 ' : '') + (r.alt ? '★ ' : '') + r.ko);
       opt.value = r.id;
+      opt.disabled = locked; // 하드 드라이브로 해금 필요
       rSel.append(opt);
+    }
+    const sel = rSel.selectedOptions[0];
+    if (!sel || sel.disabled) {
+      const firstOk = [...rSel.options].find(o => !o.disabled);
+      if (firstOk) rSel.value = firstOk.value;
     }
   };
   mSel.onchange = () => { fillRecipes(); rebuildBarCosts(); };
   fillRecipes();
-  if (prevR && [...rSel.options].some(o => o.value === prevR)) rSel.value = prevR;
+  if (prevR && [...rSel.options].some(o => o.value === prevR && !o.disabled)) rSel.value = prevR;
   rSel.onchange = () => rebuildBarCosts();
 
   // 발전기 선택 (해금 전엔 숨김)
@@ -839,6 +971,9 @@ function buildFactoryBar() {
     addNode({ type: 'gen', genKey: genSel.value, count: 0 });
   };
   $('add-sink').onclick = () => addNode({ type: 'sink', count: 1 });
+  const awBtn = $('add-awesink');
+  awBtn.style.display = state.ms >= 2 ? '' : 'none';
+  awBtn.onclick = () => addNode({ type: 'awesink', count: 1 });
 
   onUpdate(() => {
     $('add-miner').disabled = !state.miners;
@@ -884,12 +1019,13 @@ function buildFactory() {
     const body = el('div', 'fnode-body');
     const insCol = el('div', 'ports in');
     const outsCol = el('div', 'ports out');
-    if (n.type === 'sink') {
+    if (n.type === 'sink' || n.type === 'awesink') {
       const p = el('div', 'port');
       const dot = el('span', 'dot');
       dot.dataset.node = n.id; dot.dataset.item = '*'; dot.dataset.dir = 'in';
       portEls[n.id + '|*|in'] = dot;
-      p.append(dot, el('span', null, '모든 아이템 → 재고'));
+      p.append(dot, el('span', null,
+        n.type === 'sink' ? '모든 아이템 → 재고' : '아이템 소각 → 포인트'));
       insCol.append(p);
     }
     for (const pin of def.ins) {
@@ -933,7 +1069,17 @@ function buildFactory() {
         if (canAfford(def.cost)) { pay(def.cost); n.count++; update(); save(); }
       });
       foot.append(minus, cnt, plus, el('span', 'hint',
-        def.produces ? `+${def.produces}MW/대` : `${def.power}MW/대`));
+        def.produces ? `+${def.produces}MW/대` : `${fmtN(def.power)}MW/대`));
+      if (n.type === 'miner' || n.type === 'machine') {
+        const clk = el('button', 'ghost clk');
+        clk.title = '오버클럭 (동력 조각 필요)';
+        clk.addEventListener('click', ev => openClockMenu(ev, n.id));
+        foot.append(clk);
+        onUpdate(() => {
+          clk.textContent = '⚡' + clockOf(n) + '%';
+          clk.classList.toggle('oc', clockOf(n) !== 100);
+        });
+      }
       onUpdate(() => {
         cnt.textContent = n.count;
         const blocked = noDeposit();
@@ -972,8 +1118,9 @@ function buildFactory() {
     }
 
     onUpdate(() => {
-      if (n.type === 'sink') {
-        eff.textContent = '';
+      if (n.type === 'sink' || n.type === 'awesink') {
+        eff.textContent = n.type === 'awesink' ? `+${fmtN(n.ptsRate || 0)} P/분` : '';
+        eff.style.color = 'var(--good)';
         whyLine.style.display = 'none';
         // 아이템이 들어오는 동안 흡수 애니메이션
         box.classList.toggle('working',
@@ -1162,6 +1309,52 @@ function selectHandRecipeFor(cn) {
 }
 const handCraftable = cn => HAND_RECIPES.some(x => x.out.some(o => o[0] === cn));
 
+/* --- AWESOME 상점 --- */
+function buildShop() {
+  const panel = $('shop-panel');
+  const show = state.ms >= 2;
+  panel.hidden = !show;
+  if (!show) return;
+  const box = $('shop-body');
+  box.textContent = '';
+  const coupons = el('div', 'shop-coupons');
+  box.append(coupons);
+  const prog = el('div', 'hint');
+  const bar = el('div', 'ms-bar');
+  const fill = el('div');
+  bar.append(fill);
+  box.append(prog, bar);
+  const shardBtn = el('button');
+  shardBtn.append(iconEl(SHARD, 's'), ' 동력 조각 ×1 — 🎟 3');
+  shardBtn.addEventListener('click', () => {
+    if (state.coupons < 3) return;
+    state.coupons -= 3;
+    addStock(SHARD, 1);
+    update();
+    save();
+  });
+  const hdBtn = el('button', null, '💾 하드 드라이브 (대체 레시피 택1) — 🎟 5');
+  hdBtn.addEventListener('click', () => {
+    if (state.coupons < 5 || lockedAlts().length === 0) return;
+    state.coupons -= 5;
+    save();
+    openAltChoice();
+  });
+  const wrapB = el('div', 'btn-wrap');
+  wrapB.append(shardBtn, hdBtn);
+  box.append(wrapB);
+  box.append(el('div', 'hint',
+    '캔버스의 AWESOME 싱크 노드에 잉여 아이템을 연결하면 포인트가 쌓이고 쿠폰이 자동 발행됩니다. 동력 조각은 노드의 ⚡ 버튼(오버클럭)에 사용합니다.'));
+  onUpdate(() => {
+    coupons.textContent = `🎟 쿠폰 ${state.coupons}장`;
+    const cost = couponCost(state.couponsPrinted);
+    prog.textContent = `다음 쿠폰: ${fmtN(state.sinkPts)} / ${cost.toLocaleString()} P`;
+    fill.style.width = Math.min(100, state.sinkPts / cost * 100) + '%';
+    shardBtn.disabled = state.coupons < 3;
+    hdBtn.disabled = state.coupons < 5 || lockedAlts().length === 0;
+  });
+}
+
 /* --- 재고 --- */
 let stockKeys = '';
 function visibleStock() {
@@ -1221,6 +1414,7 @@ function rebuild() {
   buildMilestone();
   buildGather();
   buildHand();
+  buildShop();
   buildFactoryBar();
   buildFactory();
   buildStock();
