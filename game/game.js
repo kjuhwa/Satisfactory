@@ -23,6 +23,51 @@ const GENS = {
 const BASE_POWER = 20;
 const BUF_CAP = 100; // 포트 버퍼 용량 (기계 1대당)
 
+// 컨베이어 벨트 티어 (실제 1.0 용량). Mk.1은 무료, 업그레이드는 재료 소모
+const BELT_TIERS = [null,
+  { cap: 60,  cost: {} },
+  { cap: 120, cost: { Desc_IronPlateReinforced_C: 5 } },
+  { cap: 270, cost: { Desc_SteelPlate_C: 5 } },
+  { cap: 480, cost: { Desc_SteelPlateReinforced_C: 5 } },
+  { cap: 780, cost: { Desc_AluminumPlate_C: 10 } },
+];
+const beltOf = e => BELT_TIERS[e.tier || 1];
+
+// 자원 매장지: 순도별 슬롯 수 (기계 1대 = 매장지 1개 점유). null = 무한(물)
+const PURITY = {
+  impure: { mult: 0.5, ko: '불순' },
+  normal: { mult: 1,   ko: '보통' },
+  pure:   { mult: 2,   ko: '순수' },
+};
+const DEPOSITS = {
+  Desc_OreIron_C:      { pure: 2, normal: 4, impure: 3 },
+  Desc_OreCopper_C:    { pure: 1, normal: 3, impure: 3 },
+  Desc_Stone_C:        { pure: 2, normal: 3, impure: 2 },
+  Desc_Coal_C:         { pure: 2, normal: 3, impure: 2 },
+  Desc_OreGold_C:      { pure: 1, normal: 2, impure: 2 },
+  Desc_RawQuartz_C:    { pure: 1, normal: 2, impure: 2 },
+  Desc_Sulfur_C:       { pure: 1, normal: 2, impure: 2 },
+  Desc_OreBauxite_C:   { pure: 1, normal: 2, impure: 2 },
+  Desc_OreUranium_C:   { normal: 2, impure: 2 },
+  Desc_SAM_C:          { normal: 2, impure: 1 },
+  Desc_LiquidOil_C:    { pure: 2, normal: 3, impure: 2 },
+  Desc_NitrogenGas_C:  { normal: 2, impure: 2 },
+  Desc_Water_C:        null,
+};
+
+function depositsLeft(resource, purity) {
+  const pool = DEPOSITS[resource];
+  if (!pool) return Infinity; // 물 등 무한 자원
+  const total = pool[purity] || 0;
+  let used = 0;
+  for (const n of state.nodes) {
+    if (n.type === 'miner' && n.resource === resource && (n.purity || 'normal') === purity) {
+      used += n.count;
+    }
+  }
+  return Math.max(0, total - used);
+}
+
 /* ---------- 마일스톤 ---------- */
 const MS = [
   { name: '자동 채굴', desc: '채굴기 Mk.1 해금 — 공장 배치에서 채굴기 노드를 놓고 출하 노드로 연결하세요',
@@ -142,11 +187,12 @@ const nodeById = id => state.nodes.find(n => n.id === id);
 function nodeDef(n) {
   if (n.type === 'miner') {
     const def = EXT[n.resource] || MINER;
+    const mult = PURITY[n.purity || 'normal'].mult;
     return {
       label: (def.label || D.xnames[def.build]),
       iconCn: n.resource,
       ins: [],
-      outs: [{ item: n.resource, rate: def.rate }],
+      outs: [{ item: n.resource, rate: def.rate * mult }],
       power: def.power,
       cost: buildCost(def.build),
     };
@@ -236,18 +282,19 @@ function tick(dtMin) {
     for (const e of edges) {
       const dst = nodeById(e.to.node);
       if (!dst) continue;
+      const beltMax = beltOf(e).cap * dtMin; // 벨트 티어 용량 제한
       let moved;
       if (dst.type === 'sink') {
-        moved = share;
+        moved = Math.min(share, beltMax);
         addStock(item, moved);
       } else {
         const cap = BUF_CAP * Math.max(1, dst.count);
         const space = cap - (dst.buf.in[item] || 0);
-        moved = Math.min(share, Math.max(0, space));
+        moved = Math.min(share, beltMax, Math.max(0, space));
         dst.buf.in[item] = (dst.buf.in[item] || 0) + moved;
       }
       from.buf.out[item] -= moved;
-      if (moved > 1e-9) lastEdgeFlow[e.id] = true;
+      lastEdgeFlow[e.id] = moved / dtMin; // 분당 흐름량
     }
   }
 
@@ -531,9 +578,16 @@ function buildHand() {
 const drag = { mode: null, node: null, dx: 0, dy: 0, fromNode: null, fromItem: null, pendingRebuild: false };
 let portEls = {}; // "nodeId|item|dir" -> element
 
+const zoomOf = () => state.zoom || 1;
+
+function applyZoom() {
+  $('canvas-inner').style.transform = `scale(${zoomOf()})`;
+}
+
 function canvasPos(e) {
   const rect = $('canvas-inner').getBoundingClientRect();
-  return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+  const z = zoomOf();
+  return { x: (e.clientX - rect.left) / z, y: (e.clientY - rect.top) / z };
 }
 
 function portAnchor(nodeId, item, dir) {
@@ -541,7 +595,11 @@ function portAnchor(nodeId, item, dir) {
   if (!elp) return null;
   const rect = elp.getBoundingClientRect();
   const cRect = $('canvas-inner').getBoundingClientRect();
-  return { x: rect.left + rect.width / 2 - cRect.left, y: rect.top + rect.height / 2 - cRect.top };
+  const z = zoomOf();
+  return {
+    x: (rect.left + rect.width / 2 - cRect.left) / z,
+    y: (rect.top + rect.height / 2 - cRect.top) / z,
+  };
 }
 
 function edgePath(a, b) {
@@ -574,9 +632,63 @@ function addEdge(fromNode, fromItem, toNodeId, toItem) {
 }
 
 function removeEdge(id) {
-  state.edges = state.edges.filter(e => e.id !== id);
+  const e = state.edges.find(x => x.id === id);
+  if (e) { // 벨트 업그레이드 비용 환불
+    for (let t = 2; t <= (e.tier || 1); t++) refund(BELT_TIERS[t].cost);
+  }
+  state.edges = state.edges.filter(x => x.id !== id);
   save();
   rebuild();
+}
+
+function upgradeEdge(id) {
+  const e = state.edges.find(x => x.id === id);
+  if (!e) return;
+  const t = e.tier || 1;
+  if (t >= 5 || !canAfford(BELT_TIERS[t + 1].cost)) return;
+  pay(BELT_TIERS[t + 1].cost);
+  e.tier = t + 1;
+  save();
+  rebuild();
+}
+
+/* 연결선 클릭 시 벨트 메뉴 (업그레이드 / 삭제) */
+let edgeMenu = null;
+function closeEdgeMenu() {
+  if (edgeMenu) { edgeMenu.remove(); edgeMenu = null; }
+}
+function openEdgeMenu(ev, edgeId) {
+  closeEdgeMenu();
+  const e = state.edges.find(x => x.id === edgeId);
+  if (!e) return;
+  const t = e.tier || 1;
+  const menu = el('div', 'edge-menu');
+  const head = el('div', 'em-head');
+  head.append(iconEl(e.from.item, 's'), ` ${iname(e.from.item)} `, el('b', null, `Mk.${t}`));
+  menu.append(head);
+  const flow = lastEdgeFlow[e.id] || 0;
+  menu.append(el('div', 'em-line', `용량 ${beltOf(e).cap}/분 · 현재 흐름 ${fmtN(flow)}/분`));
+  if (t < 5) {
+    const next = BELT_TIERS[t + 1];
+    const up = el('button', null, `Mk.${t + 1} 업그레이드 (${next.cap}/분)`);
+    up.disabled = !canAfford(next.cost);
+    up.addEventListener('click', () => { upgradeEdge(edgeId); closeEdgeMenu(); });
+    menu.append(up);
+    const chips = chipRow(next.cost);
+    chips.refresh();
+    const costLine = el('div', 'em-line');
+    costLine.append(chips.box);
+    menu.append(costLine);
+  } else {
+    menu.append(el('div', 'em-line', '최고 티어입니다'));
+  }
+  const del = el('button', 'ghost danger', '연결 삭제' + (t > 1 ? ' (업그레이드 환불)' : ''));
+  del.addEventListener('click', () => { removeEdge(edgeId); closeEdgeMenu(); });
+  menu.append(del);
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - 240) + 'px';
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - 180) + 'px';
+  document.body.append(menu);
+  edgeMenu = menu;
 }
 
 function removeNode(id) {
@@ -617,6 +729,39 @@ function buildFactoryBar() {
     resSel.append(opt);
   }
   if (prevRes && state.raws.includes(prevRes)) resSel.value = prevRes;
+
+  // 순도 선택 (남은 매장지 표시, 무한 자원은 숨김)
+  const puritySel = $('add-purity');
+  let puritySig = '';
+  const refreshPurity = () => {
+    const pool = DEPOSITS[resSel.value];
+    // 열려 있는 드롭다운이 매 틱 초기화되지 않게, 잔량이 실제로 바뀔 때만 재구성
+    const sig = resSel.value + '|' + (pool
+      ? ['pure', 'normal', 'impure'].map(p => depositsLeft(resSel.value, p)).join(',')
+      : 'inf');
+    if (sig === puritySig) return;
+    puritySig = sig;
+    const prev = puritySel.value;
+    puritySel.textContent = '';
+    if (!pool) { puritySel.style.display = 'none'; return; }
+    puritySel.style.display = '';
+    for (const p of ['pure', 'normal', 'impure']) {
+      if (!(p in pool)) continue;
+      const left = depositsLeft(resSel.value, p);
+      const opt = el('option', null,
+        `${PURITY[p].ko} ×${PURITY[p].mult} (매장지 ${left}/${pool[p]})`);
+      opt.value = p;
+      opt.disabled = left <= 0;
+      puritySel.append(opt);
+    }
+    if (prev && [...puritySel.options].some(o => o.value === prev && !o.disabled)) {
+      puritySel.value = prev;
+    } else {
+      const firstOk = [...puritySel.options].find(o => !o.disabled);
+      if (firstOk) puritySel.value = firstOk.value;
+    }
+  };
+  refreshPurity();
 
   mSel.textContent = '';
   for (const m of state.machines) {
@@ -676,13 +821,14 @@ function buildFactoryBar() {
       gc.append(genChips.box);
     } else genChips = null;
   };
-  resSel.onchange = () => rebuildBarCosts();
+  resSel.onchange = () => { refreshPurity(); rebuildBarCosts(); };
   genSel.onchange = () => rebuildBarCosts();
   rebuildBarCosts();
 
   $('add-miner').onclick = () => {
     if (!state.miners || !resSel.value) return;
-    addNode({ type: 'miner', resource: resSel.value, count: 0 });
+    const purity = DEPOSITS[resSel.value] ? (puritySel.value || 'normal') : 'normal';
+    addNode({ type: 'miner', resource: resSel.value, purity, count: 0 });
   };
   $('add-node').onclick = () => {
     if (!rSel.value) return;
@@ -700,9 +846,13 @@ function buildFactoryBar() {
     if (machineChips) machineChips.refresh();
     if (genChips) genChips.refresh();
   });
+  // 매장지 잔량 표시 갱신 (기계 구매/판매 시 변동)
+  onUpdate(refreshPurity);
 }
 
 function buildFactory() {
+  closeEdgeMenu();
+  applyZoom();
   portEls = {};
   const layer = $('node-layer');
   layer.textContent = '';
@@ -720,6 +870,10 @@ function buildFactory() {
     const head = el('div', 'fnode-head');
     if (def.iconCn) head.append(iconEl(def.iconCn, 's'));
     head.append(el('span', null, def.label));
+    if (n.type === 'miner' && DEPOSITS[n.resource]) {
+      const p = n.purity || 'normal';
+      head.append(el('span', 'purity purity-' + p, PURITY[p].ko));
+    }
     const eff = el('span', 'eff');
     head.append(eff);
     box.append(head);
@@ -769,17 +923,22 @@ function buildFactory() {
       const minus = el('button', 'ghost', '−');
       const cnt = el('span', 'cnt', n.count);
       const plus = el('button', null, '+');
+      const noDeposit = () => n.type === 'miner'
+        && depositsLeft(n.resource, n.purity || 'normal') <= 0;
       minus.addEventListener('click', () => {
         if (n.count > 0) { n.count--; refund(def.cost); update(); save(); }
       });
       plus.addEventListener('click', () => {
+        if (noDeposit()) return;
         if (canAfford(def.cost)) { pay(def.cost); n.count++; update(); save(); }
       });
       foot.append(minus, cnt, plus, el('span', 'hint',
         def.produces ? `+${def.produces}MW/대` : `${def.power}MW/대`));
       onUpdate(() => {
         cnt.textContent = n.count;
-        plus.disabled = !canAfford(def.cost);
+        const blocked = noDeposit();
+        plus.disabled = !canAfford(def.cost) || blocked;
+        plus.title = blocked ? '남은 매장지가 없습니다' : '';
         minus.disabled = n.count <= 0;
       });
     }
@@ -818,7 +977,7 @@ function buildFactory() {
         whyLine.style.display = 'none';
         // 아이템이 들어오는 동안 흡수 애니메이션
         box.classList.toggle('working',
-          state.edges.some(e => e.to.node === n.id && lastEdgeFlow[e.id]));
+          state.edges.some(e => e.to.node === n.id && (lastEdgeFlow[e.id] || 0) > 1e-6));
         return;
       }
       const pct = Math.round((n.eff || 0) * 100);
@@ -839,18 +998,20 @@ function buildFactory() {
 
   // 연결선 (표시용 + 클릭용 넓은 투명 히트 영역)
   for (const e of state.edges) {
+    const tier = e.tier || 1;
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.classList.add('edge');
     path.dataset.id = e.id;
+    path.style.strokeWidth = (2 + (tier - 1) * 0.7) + 'px';
     svg.append(path);
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     hit.classList.add('edge-hit');
     hit.dataset.id = e.id;
-    const t = `${iname(e.from.item)}: ${nodeDef(nodeById(e.from.node))?.label} → ${nodeDef(nodeById(e.to.node))?.label} (클릭하면 삭제)`;
+    const t = `${iname(e.from.item)}: ${nodeDef(nodeById(e.from.node))?.label} → ${nodeDef(nodeById(e.to.node))?.label} · Mk.${tier} ${beltOf(e).cap}/분 (클릭: 업그레이드/삭제)`;
     const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
     title.textContent = t;
     hit.append(title);
-    hit.addEventListener('click', () => removeEdge(e.id));
+    hit.addEventListener('click', ev => openEdgeMenu(ev, e.id));
     hit.addEventListener('pointerenter', () => path.classList.add('hover'));
     hit.addEventListener('pointerleave', () => path.classList.remove('hover'));
     svg.append(hit);
@@ -858,7 +1019,7 @@ function buildFactory() {
   // 아이템이 흐르는 연결선은 컨베이어처럼 점선이 흘러가게
   onUpdate(() => {
     for (const path of svg.querySelectorAll('path.edge')) {
-      path.classList.toggle('flow', !!lastEdgeFlow[+path.dataset.id]);
+      path.classList.toggle('flow', (lastEdgeFlow[+path.dataset.id] || 0) > 1e-6);
     }
   });
   layoutEdges();
@@ -955,6 +1116,26 @@ function initFactoryEvents() {
   };
   wrap.addEventListener('pointerup', endDrag);
   wrap.addEventListener('pointercancel', endDrag);
+
+  // 휠 = 확대/축소 (커서 위치 기준)
+  wrap.addEventListener('wheel', e => {
+    e.preventDefault();
+    const old = zoomOf();
+    const z = Math.min(1.5, Math.max(0.4, old * Math.exp(-e.deltaY * 0.0012)));
+    if (Math.abs(z - old) < 1e-4) return;
+    const rect = wrap.getBoundingClientRect();
+    const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+    const px = (wrap.scrollLeft + cx) / old, py = (wrap.scrollTop + cy) / old;
+    state.zoom = z;
+    applyZoom();
+    wrap.scrollLeft = px * z - cx;
+    wrap.scrollTop = py * z - cy;
+  }, { passive: false });
+
+  // 벨트 메뉴 바깥 클릭 시 닫기
+  document.addEventListener('pointerdown', ev => {
+    if (edgeMenu && !edgeMenu.contains(ev.target)) closeEdgeMenu();
+  }, true);
 }
 
 /* 재료 칩/재고 클릭 → 해당 아이템의 수동 제작 레시피 자동 선택 */

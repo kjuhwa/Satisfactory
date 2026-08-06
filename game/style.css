@@ -186,7 +186,7 @@ select {
     #1b1813;
   background-size: 24px 24px, 24px 24px, auto;
 }
-#canvas-inner { position: relative; width: 2400px; height: 1400px; }
+#canvas-inner { position: relative; width: 2400px; height: 1400px; transform-origin: 0 0; }
 #edge-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #edge-svg path.edge { stroke: var(--accent-dim); stroke-width: 2.5; fill: none; pointer-events: none; }
 #edge-svg path.edge.flow {
@@ -343,6 +343,32 @@ select {
 /* 클릭하면 수동 제작 선택되는 재료 */
 .craft { cursor: pointer; }
 .craft:hover { filter: brightness(1.35); text-decoration: underline; }
+
+/* 채굴기 순도 배지 */
+.purity {
+  font-size: 10px; padding: 0 5px; border-radius: 7px;
+  border: 1px solid currentColor; font-weight: 600;
+}
+.purity-pure { color: #ffd76e; }
+.purity-normal { color: var(--muted); }
+.purity-impure { color: #b98a8a; }
+
+/* 벨트(연결선) 메뉴 */
+.edge-menu {
+  position: fixed; z-index: 50;
+  min-width: 200px;
+  background: var(--panel);
+  border: 1px solid var(--accent-dim);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, .55);
+  padding: 10px 12px;
+  display: flex; flex-direction: column; gap: 7px;
+  font-size: 12.5px;
+}
+.edge-menu .em-head { font-weight: 600; display: flex; align-items: center; gap: 4px; }
+.edge-menu .em-head b { color: var(--accent); margin-left: auto; }
+.edge-menu .em-line { color: var(--muted); font-size: 11.5px; }
+.edge-menu button { font-size: 12.5px; padding: 5px 10px; }
 
 /* 재고 */
 #stock-table { width: 100%; border-collapse: collapse; font-size: 13px; }
