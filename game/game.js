@@ -19,6 +19,11 @@ const MINER = { build: 'Desc_MinerMk1_C', rate: 60, power: 5 };
 const GENS = {
   coal: { build: 'Desc_GeneratorCoal_C', power: 75,  burns: [['Desc_Coal_C', 15], ['Desc_Water_C', 45]] },
   fuel: { build: 'Desc_GeneratorFuel_C', power: 250, burns: [['Desc_LiquidFuel_C', 20]] },
+  nuclear: {
+    build: 'Desc_GeneratorNuclear_C', power: 2500,
+    burns: [['Desc_NuclearFuelRod_C', 0.2], ['Desc_Water_C', 240]],
+    wastes: [['Desc_NuclearWaste_C', 10]], // 폐기물이 안 빠지면 발전 정지
+  },
 };
 const BASE_POWER = 20;
 const BUF_CAP = 100; // 포트 버퍼 용량 (기계 1대당)
@@ -97,11 +102,12 @@ const MS = [
   { name: '고급 제조', desc: '제조기 해금 + 카테리움 · 원시 수정 · 유황 채굴',
     cost: { Desc_Motor_C: 20, Desc_Plastic_C: 100, Desc_Rubber_C: 100, Desc_SteelPlate_C: 100 },
     apply: s => { s.machines.push('Desc_ManufacturerMk1_C'); s.raws.push('Desc_OreGold_C', 'Desc_RawQuartz_C', 'Desc_Sulfur_C'); } },
-  { name: '첨단 소재', desc: '블렌더 · 입자 가속기 · 변환기 · 양자 인코더 + 보크사이트 · 우라늄 · SAM · 질소 해금',
+  { name: '첨단 소재', desc: '블렌더 · 입자 가속기 · 변환기 · 양자 인코더 · 원자력 발전소 + 보크사이트 · 우라늄 · SAM · 질소 해금',
     cost: { Desc_Computer_C: 20, Desc_ModularFrameHeavy_C: 10, Desc_Motor_C: 50 },
     apply: s => {
       s.machines.push('Desc_Blender_C', 'Desc_HadronCollider_C', 'Desc_Converter_C', 'Desc_QuantumEncoder_C');
       s.raws.push('Desc_OreBauxite_C', 'Desc_OreUranium_C', 'Desc_SAM_C', 'Desc_NitrogenGas_C');
+      s.gensUnlocked.push('nuclear');
     } },
   { name: '프로젝트 조립: 1단계', desc: '궤도 엘리베이터로 부품을 발사합니다 — 최종 목표!',
     cost: { Desc_SpaceElevatorPart_1_C: 50, Desc_SpaceElevatorPart_2_C: 50, Desc_SpaceElevatorPart_3_C: 50 },
@@ -140,6 +146,10 @@ function withDefaults(s) {
   s.sinkPts ??= 0;
   s.coupons ??= 0;
   s.couponsPrinted ??= 0;
+  // 첨단 소재(ms7)를 이미 달성한 저장에 원자력 해금 소급 적용
+  if (s.ms >= 7 && Array.isArray(s.gensUnlocked) && !s.gensUnlocked.includes('nuclear')) {
+    s.gensUnlocked.push('nuclear');
+  }
   if (!Array.isArray(s.altUnlocked)) {
     // 구버전 저장: 이미 사용 중인 대체 레시피는 해금된 것으로 인정
     s.altUnlocked = [];
@@ -250,7 +260,7 @@ function nodeDef(n) {
       label: D.xnames[g.build],
       iconCn: g.build,
       ins: g.burns.map(([cn, rate]) => ({ item: cn, rate })),
-      outs: [],
+      outs: (g.wastes || []).map(([cn, rate]) => ({ item: cn, rate })),
       power: 0,
       produces: g.power,
       cost: buildCost(g.build),
@@ -277,23 +287,39 @@ function tick(dtMin) {
     const g = GENS[n.genKey];
     let frac = 1;
     let limit = null;
+    let limitKind = null;
     for (const [cn, rate] of g.burns) {
       const need = rate * n.count * dtMin;
       if (need > 0) {
         const f = (n.buf.in[cn] || 0) / need;
-        if (f < frac) { frac = f; limit = cn; }
+        if (f < frac) { frac = f; limit = cn; limitKind = 'in'; }
+      }
+    }
+    const gcap = BUF_CAP * n.count;
+    for (const [cn, rate] of (g.wastes || [])) {
+      const need = rate * n.count * dtMin;
+      if (need > 0) {
+        const f = Math.max(0, gcap - (n.buf.out[cn] || 0)) / need;
+        if (f < frac) { frac = f; limit = cn; limitKind = 'out'; }
       }
     }
     frac = Math.min(1, Math.max(0, frac));
     for (const [cn, rate] of g.burns) {
       n.buf.in[cn] = Math.max(0, (n.buf.in[cn] || 0) - rate * n.count * dtMin * frac);
     }
+    for (const [cn, rate] of (g.wastes || [])) {
+      n.buf.out[cn] = (n.buf.out[cn] || 0) + rate * n.count * dtMin * frac;
+    }
     supply += g.power * n.count * frac;
     n.eff = frac;
     n.why = frac >= 0.99 || !limit ? null
-      : (hasInEdge(n.id, limit)
-        ? `연료 부족: ${iname(limit)} — 이전 단계 생산을 늘리세요`
-        : `입력 미연결: ${iname(limit)} — 입력 포트를 연결하세요`);
+      : limitKind === 'in'
+        ? (hasInEdge(n.id, limit)
+          ? `연료 부족: ${iname(limit)} — 이전 단계 생산을 늘리세요`
+          : `입력 미연결: ${iname(limit)} — 입력 포트를 연결하세요`)
+        : (hasOutEdge(n.id, limit)
+          ? `출력 정체: ${iname(limit)} — 폐기물 처리를 늘리세요`
+          : `출력 미연결: ${iname(limit)} — 폐기물 처리 라인이 필요합니다`);
   }
 
   // 2) 수요 · 전력 효율
@@ -324,7 +350,8 @@ function tick(dtMin) {
         moved = Math.min(share, beltMax);
         addStock(item, moved);
       } else if (dst.type === 'awesink') {
-        moved = Math.min(share, beltMax);
+        // 0포인트 아이템(핵폐기물·유체 등)은 소각 불가 — 실제 게임과 동일
+        moved = ptsOf(item) > 0 ? Math.min(share, beltMax) : 0;
         state.sinkPts += moved * ptsOf(item);
         dst.ptsRate = (dst.ptsRate || 0) + moved * ptsOf(item) / dtMin;
       } else {
@@ -1025,7 +1052,7 @@ function buildFactory() {
       dot.dataset.node = n.id; dot.dataset.item = '*'; dot.dataset.dir = 'in';
       portEls[n.id + '|*|in'] = dot;
       p.append(dot, el('span', null,
-        n.type === 'sink' ? '모든 아이템 → 재고' : '아이템 소각 → 포인트'));
+        n.type === 'sink' ? '모든 아이템 → 재고' : '아이템 소각 → 포인트 (0P 불가)'));
       insCol.append(p);
     }
     for (const pin of def.ins) {
@@ -1458,6 +1485,39 @@ function init() {
   }, 200);
   setInterval(save, 10000);
   $('btn-save').addEventListener('click', () => { save(); });
+  // 공장 설계 내보내기 (JSON 파일 다운로드)
+  $('btn-export').addEventListener('click', () => {
+    save();
+    const blob = new Blob([JSON.stringify(state, null, 1)], { type: 'application/json' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `satisfactory-factory-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+  // 가져오기 (파일 선택 → 현재 진행 덮어쓰기)
+  $('btn-import').addEventListener('click', () => { $('import-file').click(); });
+  $('import-file').addEventListener('change', async ev => {
+    const file = ev.target.files[0];
+    ev.target.value = '';
+    if (!file) return;
+    try {
+      const s = JSON.parse(await file.text());
+      if (!s || !Array.isArray(s.nodes) || !Array.isArray(s.edges)) {
+        alert('공장 설계 파일이 아닙니다.');
+        return;
+      }
+      if (!confirm('현재 진행을 이 파일로 덮어쓸까요?')) return;
+      migrateSidebarGens(s);
+      state = withDefaults(s);
+      state.savedAt = Date.now(); // 오프라인 진행 소급 방지
+      save();
+      $('banner').hidden = true;
+      rebuild();
+    } catch (e) {
+      alert('파일을 읽을 수 없습니다: ' + e.message);
+    }
+  });
   $('btn-reset').addEventListener('click', () => {
     if (confirm('정말 처음부터 다시 시작할까요? 저장이 삭제됩니다.')) {
       localStorage.removeItem(SAVE_KEY);
