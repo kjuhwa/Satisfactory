@@ -90,12 +90,26 @@ function save() {
   localStorage.setItem(SAVE_KEY, JSON.stringify(state));
 }
 
+function migrateSidebarGens(s) {
+  // 사이드바 발전기(전역 재고 소모 방식) → 캔버스 노드 방식으로 이전: 비용 전액 환불
+  if (!s.gens) { s.gens = { coal: 0, fuel: 0 }; return; }
+  for (const [key, count] of Object.entries(s.gens)) {
+    if (count > 0 && GENS[key]) {
+      for (const [cn, n] of Object.entries(buildCost(GENS[key].build))) {
+        addToStock(s.stock, cn, n * count);
+      }
+      s._genMigrated = true;
+    }
+    s.gens[key] = 0;
+  }
+}
+
 function load() {
   try {
     const raw = localStorage.getItem(SAVE_KEY);
     if (raw) {
       const s = JSON.parse(raw);
-      if (s && Array.isArray(s.nodes)) return s;
+      if (s && Array.isArray(s.nodes)) { migrateSidebarGens(s); return s; }
     }
     // v1 (콤보박스 라인) 저장 → 기계·채굴기 비용을 전액 환불하고 그래프 방식으로 이전
     const old = localStorage.getItem(OLD_KEY);
@@ -113,6 +127,7 @@ function load() {
         for (const [cn, n] of Object.entries(buildCost(def.build))) addToStock(s2.stock, cn, n * count);
       }
       localStorage.removeItem(OLD_KEY);
+      migrateSidebarGens(s2);
       s2._migrated = true;
       return s2;
     }
@@ -148,6 +163,18 @@ function nodeDef(n) {
       machine: r.machine,
     };
   }
+  if (n.type === 'gen') {
+    const g = GENS[n.genKey];
+    return {
+      label: D.xnames[g.build],
+      iconCn: g.build,
+      ins: g.burns.map(([cn, rate]) => ({ item: cn, rate })),
+      outs: [],
+      power: 0,
+      produces: g.power,
+      cost: buildCost(g.build),
+    };
+  }
   return { label: '출하 (재고로)', iconCn: null, ins: [], outs: [], power: 0, cost: {} }; // sink
 }
 
@@ -157,20 +184,34 @@ let lastPower = { supply: BASE_POWER, demand: 0, eff: 1 };
 
 function tick(dtMin) {
   const prev = { ...state.stock };
+  const hasInEdge = (id, item) => state.edges.some(e => e.to.node === id && e.to.item === item);
+  const hasOutEdge = (id, item) => state.edges.some(e => e.from.node === id && e.from.item === item);
 
-  // 1) 발전: 연료 있는 만큼 가동
+  // 1) 발전기 노드: 입력 버퍼의 연료만큼 가동 (전력망과 무관하게 동작)
   let supply = BASE_POWER;
-  for (const [key, g] of Object.entries(GENS)) {
-    const count = state.gens[key];
-    if (count <= 0) continue;
+  for (const n of state.nodes) {
+    if (n.type !== 'gen') continue;
+    if (n.count <= 0) { n.eff = 0; n.why = '기계 없음 — + 로 구매'; continue; }
+    const g = GENS[n.genKey];
     let frac = 1;
-    for (const [fuelCn, rate] of g.burns) {
-      const need = rate * count * dtMin;
-      if (need > 0) frac = Math.min(frac, stockOf(fuelCn) / need);
+    let limit = null;
+    for (const [cn, rate] of g.burns) {
+      const need = rate * n.count * dtMin;
+      if (need > 0) {
+        const f = (n.buf.in[cn] || 0) / need;
+        if (f < frac) { frac = f; limit = cn; }
+      }
     }
     frac = Math.min(1, Math.max(0, frac));
-    for (const [fuelCn, rate] of g.burns) addStock(fuelCn, -rate * count * dtMin * frac);
-    supply += g.power * count * frac;
+    for (const [cn, rate] of g.burns) {
+      n.buf.in[cn] = Math.max(0, (n.buf.in[cn] || 0) - rate * n.count * dtMin * frac);
+    }
+    supply += g.power * n.count * frac;
+    n.eff = frac;
+    n.why = frac >= 0.99 || !limit ? null
+      : (hasInEdge(n.id, limit)
+        ? `연료 부족: ${iname(limit)} — 이전 단계 생산을 늘리세요`
+        : `입력 미연결: ${iname(limit)} — 입력 포트를 연결하세요`);
   }
 
   // 2) 수요 · 전력 효율
@@ -208,8 +249,6 @@ function tick(dtMin) {
   }
 
   // 4) 채굴기 노드: 출력 버퍼 공간만큼 생산 (막히면 정지 = 배압)
-  const hasInEdge = (id, item) => state.edges.some(e => e.to.node === id && e.to.item === item);
-  const hasOutEdge = (id, item) => state.edges.some(e => e.from.node === id && e.from.item === item);
   for (const n of state.nodes) {
     if (n.type !== 'miner') continue;
     if (n.count <= 0) { n.eff = 0; n.why = '기계 없음 — + 로 구매'; continue; }
@@ -485,50 +524,6 @@ function buildHand() {
   $('hand-craft-10').onclick = () => craft(10);
 }
 
-/* --- 발전 --- */
-function buildGens() {
-  const box = $('extractor-list');
-  box.textContent = '';
-  if (state.gensUnlocked.length === 0) {
-    box.append(el('div', 'hint', `기본 전력 ${BASE_POWER}MW. 마일스톤 3에서 석탄 발전기가 해금됩니다.`));
-    return;
-  }
-  for (const key of state.gensUnlocked) {
-    const g = GENS[key];
-    const burns = g.burns.map(([cn, rate]) => `${iname(cn)} ${rate}/분`).join(' + ');
-    const row = el('div', 'row');
-    const grow = el('div', 'grow');
-    const name = el('div', 'name');
-    name.append(iconEl(g.build), ' ' + D.xnames[g.build]);
-    grow.append(name);
-    grow.append(el('div', 'detail', `+${g.power}MW · 소비 ${burns} (재고에서 차감)`));
-    row.append(grow);
-    const cnt = el('span', 'cnt', '0');
-    const minus = el('button', 'mini ghost', '−');
-    const plus = el('button', 'mini', '+');
-    const cost = buildCost(g.build);
-    minus.addEventListener('click', () => {
-      if (state.gens[key] > 0) { state.gens[key]--; refund(cost); update(); save(); }
-    });
-    plus.addEventListener('click', () => {
-      if (canAfford(cost)) { pay(cost); state.gens[key]++; update(); save(); }
-    });
-    row.append(minus, cnt, plus);
-    const costLine = el('div', 'cost-line');
-    costLine.append(el('span', null, '비용'));
-    const chips = chipRow(cost);
-    costLine.append(chips.box);
-    row.append(costLine);
-    box.append(row);
-    onUpdate(() => {
-      cnt.textContent = state.gens[key];
-      plus.disabled = !canAfford(cost);
-      minus.disabled = state.gens[key] <= 0;
-      chips.refresh();
-    });
-  }
-}
-
 /* ---------- 공장 배치 캔버스 ---------- */
 const drag = { mode: null, node: null, dx: 0, dy: 0, fromNode: null, fromItem: null, pendingRebuild: false };
 let portEls = {}; // "nodeId|item|dir" -> element
@@ -642,8 +637,21 @@ function buildFactoryBar() {
   if (prevR && [...rSel.options].some(o => o.value === prevR)) rSel.value = prevR;
   rSel.onchange = () => rebuildBarCosts();
 
+  // 발전기 선택 (해금 전엔 숨김)
+  const genSel = $('add-gen');
+  const prevG = genSel.value;
+  genSel.textContent = '';
+  for (const key of state.gensUnlocked) {
+    const g = GENS[key];
+    const opt = el('option', null, `${D.xnames[g.build]} (+${g.power}MW)`);
+    opt.value = key;
+    genSel.append(opt);
+  }
+  if (prevG && state.gensUnlocked.includes(prevG)) genSel.value = prevG;
+  $('gen-bar').style.display = state.gensUnlocked.length > 0 ? '' : 'none';
+
   // 비용 칩 (선택 기준, 노드 자체는 무료 — 기계 구매는 노드 안의 + 버튼)
-  let minerChips = null, machineChips = null;
+  let minerChips = null, machineChips = null, genChips = null;
   const rebuildBarCosts = () => {
     const mc = $('miner-cost');
     mc.textContent = '';
@@ -658,8 +666,15 @@ function buildFactoryBar() {
       machineChips = chipRow(buildCost(recipeById[rSel.value].machine));
       xc.append(machineChips.box);
     } else machineChips = null;
+    const gc = $('gen-cost');
+    gc.textContent = '';
+    if (genSel.value) {
+      genChips = chipRow(buildCost(GENS[genSel.value].build));
+      gc.append(genChips.box);
+    } else genChips = null;
   };
   resSel.onchange = () => rebuildBarCosts();
+  genSel.onchange = () => rebuildBarCosts();
   rebuildBarCosts();
 
   $('add-miner').onclick = () => {
@@ -670,12 +685,17 @@ function buildFactoryBar() {
     if (!rSel.value) return;
     addNode({ type: 'machine', recipeId: rSel.value, count: 0 });
   };
+  $('add-gen-btn').onclick = () => {
+    if (!genSel.value) return;
+    addNode({ type: 'gen', genKey: genSel.value, count: 0 });
+  };
   $('add-sink').onclick = () => addNode({ type: 'sink', count: 1 });
 
   onUpdate(() => {
     $('add-miner').disabled = !state.miners;
     if (minerChips) minerChips.refresh();
     if (machineChips) machineChips.refresh();
+    if (genChips) genChips.refresh();
   });
 }
 
@@ -752,7 +772,8 @@ function buildFactory() {
       plus.addEventListener('click', () => {
         if (canAfford(def.cost)) { pay(def.cost); n.count++; update(); save(); }
       });
-      foot.append(minus, cnt, plus, el('span', 'hint', `${def.power}MW/대`));
+      foot.append(minus, cnt, plus, el('span', 'hint',
+        def.produces ? `+${def.produces}MW/대` : `${def.power}MW/대`));
       onUpdate(() => {
         cnt.textContent = n.count;
         plus.disabled = !canAfford(def.cost);
@@ -999,7 +1020,6 @@ function rebuild() {
   buildMilestone();
   buildGather();
   buildHand();
-  buildGens();
   buildFactoryBar();
   buildFactory();
   buildStock();
@@ -1017,6 +1037,9 @@ function init() {
   if (state._migrated) {
     delete state._migrated;
     showBanner('🔧 공장이 그래프 방식으로 개편되어 기존 기계·채굴기 비용이 전액 재고로 환불되었습니다. 아래 공장 배치에서 다시 연결해 보세요!');
+  } else if (state._genMigrated) {
+    delete state._genMigrated;
+    showBanner('⚡ 발전기가 캔버스 노드로 바뀌었습니다. 비용은 환불됐으니 툴바의 "발전기 추가"로 배치하고 석탄·물을 연결하세요!');
   }
 
   const elapsedSec = Math.min(4 * 3600, (Date.now() - (state.savedAt || Date.now())) / 1000);
