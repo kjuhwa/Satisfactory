@@ -116,8 +116,21 @@ const MS = [
       s.raws.push('Desc_OreBauxite_C', 'Desc_OreUranium_C', 'Desc_SAM_C', 'Desc_NitrogenGas_C');
       s.gensUnlocked.push('nuclear');
     } },
-  { name: '프로젝트 조립: 1단계', desc: '궤도 엘리베이터로 부품을 발사합니다 — 최종 목표!',
+  { name: '프로젝트 조립: 1단계', desc: '궤도 엘리베이터로 첫 부품을 발사합니다 (보상: 쿠폰 10장)',
     cost: { Desc_SpaceElevatorPart_1_C: 50, Desc_SpaceElevatorPart_2_C: 50, Desc_SpaceElevatorPart_3_C: 50 },
+    apply: s => { s.coupons += 10; } },
+  { name: '프로젝트 조립: 2단계', desc: '부품 수요가 커집니다 — 라인 증설 필요 (보상: 쿠폰 15장)',
+    cost: { Desc_SpaceElevatorPart_1_C: 150, Desc_SpaceElevatorPart_2_C: 150, Desc_SpaceElevatorPart_3_C: 50 },
+    apply: s => { s.coupons += 15; } },
+  { name: '프로젝트 조립: 3단계', desc: '모듈 엔진 · 적응형 제어 장치 생산 (보상: 쿠폰 20장)',
+    cost: { Desc_SpaceElevatorPart_2_C: 300, Desc_SpaceElevatorPart_4_C: 100, Desc_SpaceElevatorPart_5_C: 50 },
+    apply: s => { s.coupons += 20; } },
+  { name: '프로젝트 조립: 4단계', desc: '최상위 부품 4종 — 원자력·알루미늄 체인 총동원 (보상: 쿠폰 30장)',
+    cost: { Desc_SpaceElevatorPart_6_C: 100, Desc_SpaceElevatorPart_7_C: 100,
+            Desc_SpaceElevatorPart_8_C: 50, Desc_SpaceElevatorPart_9_C: 50 },
+    apply: s => { s.coupons += 30; } },
+  { name: '프로젝트 조립: 5단계', desc: '차원 너머로 — 최종 목표!',
+    cost: { Desc_SpaceElevatorPart_10_C: 50, Desc_SpaceElevatorPart_11_C: 25, Desc_SpaceElevatorPart_12_C: 50 },
     apply: s => { s.won = true; } },
 ];
 
@@ -153,6 +166,8 @@ function withDefaults(s) {
   s.sinkPts ??= 0;
   s.coupons ??= 0;
   s.couponsPrinted ??= 0;
+  // 마일스톤이 확장되어, 이전 최종(1단계) 클리어 저장은 계속 진행
+  s.won = s.ms >= MS.length;
   // 첨단 소재(ms7)를 이미 달성한 저장에 원자력 해금 소급 적용
   if (s.ms >= 7 && Array.isArray(s.gensUnlocked) && !s.gensUnlocked.includes('nuclear')) {
     s.gensUnlocked.push('nuclear');
@@ -376,6 +391,7 @@ function tick(dtMin) {
     state.sinkPts -= couponCost(state.couponsPrinted);
     state.couponsPrinted++;
     state.coupons++;
+    sfx('coupon');
   }
 
   // 4) 채굴기 노드: 출력 버퍼 공간만큼 생산 (막히면 정지 = 배압)
@@ -454,6 +470,30 @@ function tick(dtMin) {
   lastPower = { supply, demand, eff: powerEff };
 }
 
+/* ---------- 효과음 (WebAudio 합성, 에셋 없음) ---------- */
+let audioCtx = null;
+function beep(freq, dur, delay, type, vol) {
+  const t0 = audioCtx.currentTime + delay;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.type = type || 'sine';
+  osc.frequency.value = freq;
+  g.gain.setValueAtTime(vol || 0.12, t0);
+  g.gain.exponentialRampToValueAtTime(0.001, t0 + dur);
+  osc.connect(g).connect(audioCtx.destination);
+  osc.start(t0);
+  osc.stop(t0 + dur);
+}
+function sfx(name) {
+  if (!state || state.muted || !audioCtx) return;
+  try {
+    if (name === 'milestone') { beep(523, .18, 0); beep(659, .18, .1); beep(784, .3, .2); }
+    else if (name === 'coupon') { beep(880, .1, 0, 'triangle'); beep(1175, .18, .08, 'triangle'); }
+    else if (name === 'unlock') { beep(659, .12, 0); beep(880, .25, .09); }
+    else if (name === 'won') { [523, 659, 784, 1047, 1319].forEach((f, i) => beep(f, .35, i * .13)); }
+  } catch (e) { /* 오디오 실패는 무시 */ }
+}
+
 /* ---------- UI 공통 ---------- */
 const $ = id => document.getElementById(id);
 function el(tag, cls, text) {
@@ -530,7 +570,8 @@ function buildMilestone() {
     pay(m.cost);
     m.apply(state);
     state.ms++;
-    if (state.won) showBanner('🎉 프로젝트 조립 1단계 완료! FICSIT이 만족했습니다. 계속 확장해도 좋습니다.');
+    sfx(state.won ? 'won' : 'milestone');
+    if (state.won) showBanner('🎉 프로젝트 조립 완료! FICSIT이 매우 만족했습니다. 자유롭게 확장하세요.');
     rebuild();
     save();
   });
@@ -839,6 +880,7 @@ function openAltChoice() {
     b.addEventListener('click', () => {
       state.altUnlocked.push(r.id);
       overlay.remove();
+      sfx('unlock');
       save();
       rebuild();
       showBanner(`★ ${r.ko} 레시피 해금!`);
@@ -1378,6 +1420,47 @@ function selectHandRecipeFor(cn) {
 }
 const handCraftable = cn => HAND_RECIPES.some(x => x.out.some(o => o[0] === cn));
 
+/* --- 시작 가이드 (첫 플레이 튜토리얼) --- */
+const TUT_STEPS = [
+  { text: '수동 채집에서 철 광석을 캐세요 (10개)', done: () => stockOf('Desc_OreIron_C') >= 10 },
+  { text: '수동 제작에서 철 주괴를 만드세요 (5개)', done: () => stockOf('Desc_IronIngot_C') >= 5 },
+  { text: '철판 10개 · 철봉 10개를 만드세요', done: () => stockOf('Desc_IronPlate_C') >= 10 && stockOf('Desc_IronRod_C') >= 10 },
+  { text: '마일스톤 1 "자동 채굴"을 달성하세요', done: () => state.ms >= 1 },
+  { text: '공장 배치에서 채굴기 노드를 추가하고 + 로 기계를 사세요', done: () => state.nodes.some(n => n.type === 'miner' && n.count > 0) },
+  { text: '제련기(철 주괴) 노드를 추가하고 채굴기의 출력 ●을 입력 ●으로 드래그해 연결하세요', done: () => state.edges.length >= 1 && state.nodes.some(n => n.type === 'machine' && n.count > 0) },
+  { text: '기계의 출력을 출하 노드에 연결하면 재고로 들어옵니다', done: () => state.edges.some(e => nodeById(e.to.node)?.type === 'sink') },
+];
+
+function buildTutorial() {
+  const panel = $('tut-panel');
+  const allDone = () => (state.tut || []).filter(Boolean).length >= TUT_STEPS.length;
+  if (state.tutHidden || allDone()) { panel.hidden = true; return; }
+  panel.hidden = false;
+  const box = $('tut-body');
+  box.textContent = '';
+  const rows = TUT_STEPS.map((s, i) => {
+    const row = el('div', 'tut-step');
+    const mark = el('span', 'tut-mark');
+    row.append(mark, el('span', null, `${i + 1}. ${s.text}`));
+    box.append(row);
+    return { row, mark, i };
+  });
+  $('tut-hide').onclick = () => { state.tutHidden = true; save(); rebuild(); };
+  onUpdate(() => {
+    state.tut ??= [];
+    let firstOpen = -1;
+    for (const r of rows) {
+      if (!state.tut[r.i] && TUT_STEPS[r.i].done()) state.tut[r.i] = true; // 한번 달성하면 유지
+      const done = !!state.tut[r.i];
+      r.mark.textContent = done ? '✅' : '⬜';
+      if (!done && firstOpen < 0) firstOpen = r.i;
+      r.row.classList.toggle('done', done);
+    }
+    for (const r of rows) r.row.classList.toggle('current', r.i === firstOpen);
+    if (allDone()) { panel.hidden = true; }
+  });
+}
+
 /* --- AWESOME 상점 --- */
 function buildShop() {
   const panel = $('shop-panel');
@@ -1530,6 +1613,7 @@ function buildPower() {
 function rebuild() {
   if (drag.mode) { drag.pendingRebuild = true; return; }
   updaters = [];
+  buildTutorial();
   buildMilestone();
   buildGather();
   buildHand();
@@ -1564,7 +1648,7 @@ function init() {
     showBanner(`⏰ 오프라인 ${Math.floor(elapsedSec / 60)}분 동안 공장이 가동됐습니다.`);
     setTimeout(() => { $('banner').hidden = true; }, 6000);
   }
-  if (state.won) showBanner('🎉 프로젝트 조립 1단계 완료! FICSIT이 만족했습니다. 계속 확장해도 좋습니다.');
+  if (state.won) showBanner('🎉 프로젝트 조립 완료! FICSIT이 매우 만족했습니다. 자유롭게 확장하세요.');
 
   initFactoryEvents();
   rebuild();
@@ -1577,6 +1661,17 @@ function init() {
     update();
   }, 200);
   setInterval(save, 10000);
+  // 오디오는 첫 사용자 입력 후에만 생성 가능 (브라우저 정책)
+  document.addEventListener('pointerdown', () => {
+    if (!audioCtx) {
+      try { audioCtx = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) { /* 무시 */ }
+    }
+  }, { once: true });
+  const muteBtn = $('btn-mute');
+  const refreshMute = () => { muteBtn.textContent = state.muted ? '🔇' : '🔊'; };
+  muteBtn.addEventListener('click', () => { state.muted = !state.muted; refreshMute(); save(); });
+  refreshMute();
+
   $('btn-save').addEventListener('click', () => { save(); });
   // 공장 설계 내보내기 (JSON 파일 다운로드)
   $('btn-export').addEventListener('click', () => {

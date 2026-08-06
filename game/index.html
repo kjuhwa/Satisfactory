@@ -17,6 +17,7 @@
       <div class="power-label">전력 <span id="power-text">20 / 20 MW</span></div>
       <div class="power-bar"><div id="power-fill"></div></div>
     </div>
+    <button id="btn-mute" class="ghost" title="효과음 켜기/끄기">🔊</button>
     <button id="btn-save" class="ghost">저장</button>
     <button id="btn-export" class="ghost">내보내기</button>
     <button id="btn-import" class="ghost">가져오기</button>
@@ -29,6 +30,10 @@
 
 <div id="layout">
 <aside id="sidebar">
+    <div class="panel" id="tut-panel" hidden>
+      <h2>시작 가이드 <button id="tut-hide" class="mini ghost" style="float:right">숨기기</button></h2>
+      <div id="tut-body"></div>
+    </div>
     <div class="panel" id="milestone-panel">
       <h2>마일스톤</h2>
       <div id="milestone-body"></div>
