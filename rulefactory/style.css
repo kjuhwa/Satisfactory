@@ -112,6 +112,11 @@ input[type=checkbox] { accent-color: var(--accent); }
 .empty { color: var(--muted); padding: 10px 2px; }
 
 /* 공장 현황 · 계약 · 연구 */
+.rescue {
+  border: 1px solid var(--bad); border-radius: 8px;
+  padding: 8px 10px; margin-bottom: 8px; background: rgba(239,123,123,.08);
+}
+.rescue button { margin-top: 5px; }
 .sec-title { font-weight: 700; margin: 8px 0 4px; }
 .frow { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .frow .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

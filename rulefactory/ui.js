@@ -206,15 +206,25 @@ function moveRule(idx, dir) {
 
 /** 처음 시작하는 사람을 위한 기본 규칙 세트 */
 function addPresets() {
+  // 스스로 돌아가는 최소 순환. 순서가 곧 우선순위이므로,
+  // 채굴기 재생산에 꼭 필요한 철판·철봉을 콘크리트보다 앞에 둔다.
   const presets = [
-    { cond: { type: 'stock', item: 'Desc_OreIron_C', op: '<', value: 200 },
-      act: { type: 'buildExt', res: 'Desc_OreIron_C', amount: 1 }, cooldown: 8 },
-    { cond: { type: 'stock', item: 'Desc_OreIron_C', op: '>', value: 300 },
-      act: { type: 'buildLine', recipe: 'Recipe_IngotIron_C', amount: 1 }, cooldown: 8 },
-    { cond: { type: 'stock', item: 'Desc_IronIngot_C', op: '>', value: 200 },
-      act: { type: 'buildLine', recipe: 'Recipe_IronPlate_C', amount: 1 }, cooldown: 8 },
-    { cond: { type: 'every', value: 30 },
-      act: { type: 'deliver' }, cooldown: 30 },
+    { cond: { type: 'stock', item: 'Desc_OreIron_C', op: '<', value: 120 },
+      act: { type: 'buildExt', res: 'Desc_OreIron_C', amount: 1 }, cooldown: 10 },
+    { cond: { type: 'stock', item: 'Desc_OreIron_C', op: '>', value: 60 },
+      act: { type: 'buildLine', recipe: 'Recipe_IngotIron_C', amount: 1 }, cooldown: 10 },
+    { cond: { type: 'stock', item: 'Desc_IronIngot_C', op: '>', value: 40 },
+      act: { type: 'buildLine', recipe: 'Recipe_IronPlate_C', amount: 1 }, cooldown: 10 },
+    { cond: { type: 'stock', item: 'Desc_IronIngot_C', op: '>', value: 80 },
+      act: { type: 'buildLine', recipe: 'Recipe_IronRod_C', amount: 1 }, cooldown: 10 },
+    { cond: { type: 'stock', item: 'Desc_Stone_C', op: '<', value: 120 },
+      act: { type: 'buildExt', res: 'Desc_Stone_C', amount: 1 }, cooldown: 12 },
+    { cond: { type: 'stock', item: 'Desc_Stone_C', op: '>', value: 60 },
+      act: { type: 'buildLine', recipe: 'Recipe_Concrete_C', amount: 1 }, cooldown: 12 },
+    { cond: { type: 'stock', item: 'Desc_OreCopper_C', op: '<', value: 120 },
+      act: { type: 'buildExt', res: 'Desc_OreCopper_C', amount: 1 }, cooldown: 14 },
+    { cond: { type: 'stock', item: 'Desc_OreCopper_C', op: '>', value: 60 },
+      act: { type: 'buildLine', recipe: 'Recipe_IngotCopper_C', amount: 1 }, cooldown: 14 },
   ];
   let added = 0;
   for (const p of presets) {
@@ -230,6 +240,17 @@ function addPresets() {
 function buildFactory() {
   const box = $('factory-body');
   box.textContent = '';
+
+  // 교착 탈출: 채취기도 없고 채취기를 지을 자재도 없을 때만 열린다
+  const rescue = el('div', 'rescue');
+  rescue.append(el('div', 'hint', '새로 들어올 자원이 없습니다 — 지원 물자를 받아 다시 시작하세요.'));
+  const rBtn = el('button', null, '🚨 긴급 지원 물자 요청');
+  rBtn.addEventListener('click', () => {
+    if (requestSupplies()) { save(); rebuild(); banner('🚨 지원 물자를 받았습니다. 규칙이 다시 돌아갑니다.'); }
+  });
+  rescue.append(rBtn);
+  box.append(rescue);
+  onUpdate(() => { rescue.style.display = isStuck() ? '' : 'none'; });
 
   const section = (title, rows) => {
     box.append(el('div', 'sec-title', title));
@@ -499,6 +520,10 @@ async function init() {
   const remote = await Cloud.pull();
   if (remote && (remote.savedAt || 0) > local) state = withDefaults(remote);
 
+  if (state._rescued) {
+    delete state._rescued;
+    banner('🚨 시작 물자가 없어 아무것도 지을 수 없는 상태였습니다 — 지원 물자와 철 광석 채취기 1대를 지급했습니다.');
+  }
   const off = applyOffline();
   if (off > 10) banner(`⏰ 오프라인 ${Math.floor(off / 60)}분 동안 규칙이 공장을 돌렸습니다.`);
   if (state.won) banner('🎉 모든 계약을 완수했습니다!');

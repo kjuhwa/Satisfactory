@@ -19,10 +19,12 @@ const buildCost = cn => Object.fromEntries(D.build[cn] || []);
 const ptsOf = cn => (D.items[cn] && D.items[cn].pts) || 0;
 
 /* ---------- 상수 ---------- */
-const BASE_POWER = 20;          // 시작 전력 (MW)
+// 시작 전력. 초반 기계 20대 정도는 돌아가야 규칙이 굴러가고,
+// 그 이상으로 키우려면 석탄 발전 연구가 필요해진다.
+const BASE_POWER = 100;
 const TICK_MS = 250;
 const RULE_COST_EVAL = 1;       // 규칙 1개 평가 비용
-const RULE_COST_FIRE = 5;       // 규칙 1개 발동 비용
+const RULE_COST_FIRE = 3;       // 규칙 1개 발동 비용 (시작 대역폭으로 3~4개는 돌아야 게임이 굴러간다)
 const DEFAULT_COOLDOWN = 3;     // 규칙 기본 쿨다운 (초)
 const LOG_MAX = 60;
 
@@ -49,8 +51,8 @@ const GENS = {
 const TECHS = [
   { id: 'bw1',    name: '제어 대역폭 II',  desc: '대역폭 +6',
     credits: 40,   cost: { Desc_IronPlate_C: 60, Desc_Wire_C: 100 },       apply: s => { s.bwMax += 6; } },
-  { id: 'assembler', name: '조립기',       desc: '조립기 해금 (보강 철판·회전자)',
-    credits: 60,   cost: { Desc_IronPlateReinforced_C: 10, Desc_Cable_C: 60 }, apply: s => { s.machines.push('Desc_AssemblerMk1_C'); } },
+  { id: 'sell2',  name: '고효율 소각로',   desc: '재고 소각으로 얻는 크레딧 2배',
+    credits: 60,   cost: { Desc_Cement_C: 100, Desc_Wire_C: 100 },            apply: s => { s.sellMult = 2; } },
   { id: 'slot1',  name: '규칙 메모리 II',  desc: '규칙 슬롯 +4',
     credits: 80,   cost: { Desc_Cement_C: 100, Desc_IronRod_C: 100 },      apply: s => { s.ruleSlots += 4; } },
   { id: 'coal',   name: '석탄 발전',       desc: '석탄·물 채취 + 석탄 발전기 해금',
@@ -85,21 +87,35 @@ const CONTRACTS = [
 const SAVE_KEY = 'rulefactory-v1';
 let state = null;
 
+// 시작 지원 물자. 이 게임에는 수동 채집·수동 제작이 없으므로
+// 첫 채취기와 첫 라인을 세울 밑천이 없으면 아무것도 시작할 수 없다.
+const STARTER_KIT = {
+  Desc_IronPlate_C: 80,
+  Desc_IronRod_C: 60,
+  Desc_Cement_C: 40,
+  Desc_Wire_C: 80,
+  Desc_Cable_C: 40,
+  Desc_IronPlateReinforced_C: 10,
+};
+
 function freshState() {
   return {
-    stock: {},
-    ext: [],            // [{ id, res, count }]
+    stock: { ...STARTER_KIT },
+    // 지원 채취기 1대는 무료로 깔려 있다 (여기서 나오는 광석이 첫 순환을 만든다)
+    ext: [{ id: 1, res: 'Desc_OreIron_C', count: 1 }],
     lines: [],          // [{ id, recipeId, count }]
     gens: [],           // [{ id, key, count }]
     rules: [],          // [{ id, on, cond, act, cooldown, lastFired, fires, status }]
-    machines: ['Desc_SmelterMk1_C', 'Desc_ConstructorMk1_C'],
+    // 조립기까지 있어야 제작기 재료(보강 철판)를 스스로 만들 수 있다 = 초반 자립 가능
+    machines: ['Desc_SmelterMk1_C', 'Desc_ConstructorMk1_C', 'Desc_AssemblerMk1_C'],
     techs: [],
     credits: 0,
-    bwMax: 6,
-    ruleSlots: 4,
+    sellMult: 1,
+    bwMax: 16,
+    ruleSlots: 8,
     contract: 0,
     offlineH: 4,
-    seq: 1,
+    seq: 2,             // 1번은 지원 채취기가 쓴다
     log: [],
     won: false,
     savedAt: Date.now(),
@@ -112,12 +128,40 @@ function withDefaults(s) {
     if (!Array.isArray(s[k])) s[k] = fresh[k];
   }
   if (!s.stock || typeof s.stock !== 'object') s.stock = {};
-  for (const k of ['credits', 'bwMax', 'ruleSlots', 'contract', 'offlineH', 'seq']) {
+  for (const k of ['credits', 'bwMax', 'ruleSlots', 'contract', 'offlineH', 'seq', 'sellMult']) {
     if (typeof s[k] !== 'number' || !isFinite(s[k])) s[k] = fresh[k];
   }
   s.seq = Math.max(s.seq, 1 + Math.max(0, ...s.rules.map(r => r.id || 0),
     ...s.lines.map(l => l.id || 0), ...s.ext.map(e => e.id || 0), ...s.gens.map(g => g.id || 0)));
+
+  // 밑천 없이 시작해 아무것도 못 하던 초기 저장을 구제한다
+  if (isStuckState(s) && !s.kitGiven) {
+    for (const [cn, n] of Object.entries(STARTER_KIT)) s.stock[cn] = (s.stock[cn] || 0) + n;
+    if (!s.ext.some(e => e.count > 0)) s.ext.push({ id: s.seq++, res: 'Desc_OreIron_C', count: 1 });
+    s.kitGiven = true;
+    s._rescued = true;
+  }
   return s;
+}
+
+/** 채취기가 하나도 없고 채취기를 지을 자재도 없으면 새로 들어올 자원이 없다 = 교착 */
+function isStuckState(s) {
+  const noExt = !s.ext.some(e => e.count > 0);
+  const minerCost = buildCost('Desc_MinerMk1_C');
+  const canBuild = Object.entries(minerCost).every(([cn, n]) => (s.stock[cn] || 0) >= n);
+  return noExt && !canBuild;
+}
+const isStuck = () => isStuckState(state);
+
+/** 교착에서 빠져나오기 위한 지원 물자 (막혔을 때만 쓸 수 있다) */
+function requestSupplies() {
+  if (!isStuck()) return false;
+  for (const [cn, n] of Object.entries(STARTER_KIT)) addStock(cn, n);
+  if (!state.ext.some(e => e.count > 0)) {
+    state.ext.push({ id: state.seq++, res: 'Desc_OreIron_C', count: 1 });
+  }
+  log('🚨 긴급 지원 물자를 받았습니다.', 'contract');
+  return true;
 }
 
 const stockOf = cn => state.stock[cn] || 0;
@@ -250,6 +294,18 @@ function condMet(rule, nowSec) {
   }
 }
 
+/** 비용을 못 내면 "무엇이" 모자란지 알려준다 (막힘 사유 표시용) */
+function shortfall(cost) {
+  const miss = Object.entries(cost)
+    .filter(([cn, n]) => stockOf(cn) < n)
+    .sort((a, b) => (b[1] - stockOf(b[0])) - (a[1] - stockOf(a[0])));
+  if (!miss.length) return null;
+  const [cn, n] = miss[0];
+  return `자재 부족: ${iname(cn)} ${Math.floor(stockOf(cn))}/${n}`
+    + (miss.length > 1 ? ` 외 ${miss.length - 1}종` : '');
+}
+const scaleCost = (cost, k) => Object.fromEntries(Object.entries(cost).map(([cn, n]) => [cn, n * k]));
+
 /** 행동 실행. 성공하면 true, 자원/조건 부족이면 사유 문자열 */
 function doAction(rule) {
   const a = rule.act || {};
@@ -258,9 +314,9 @@ function doAction(rule) {
     case 'buildLine': {
       const r = recipeById[a.recipe];
       if (!r || !recipeUnlocked(r)) return '레시피 잠김';
-      const cost = buildCost(r.machine);
-      const total = Object.fromEntries(Object.entries(cost).map(([cn, n]) => [cn, n * amount]));
-      if (!canAfford(total)) return '건설 자재 부족';
+      const total = scaleCost(buildCost(r.machine), amount);
+      const miss = shortfall(total);
+      if (miss) return miss;
       pay(total);
       let line = state.lines.find(l => l.recipeId === a.recipe);
       if (!line) { line = { id: state.seq++, recipeId: a.recipe, count: 0 }; state.lines.push(line); }
@@ -271,8 +327,9 @@ function doAction(rule) {
     case 'buildExt': {
       const def = RES[a.res];
       if (!def || !resUnlocked(a.res)) return '자원 잠김';
-      const total = Object.fromEntries(Object.entries(buildCost(def.build)).map(([cn, n]) => [cn, n * amount]));
-      if (!canAfford(total)) return '건설 자재 부족';
+      const total = scaleCost(buildCost(def.build), amount);
+      const miss = shortfall(total);
+      if (miss) return miss;
       pay(total);
       let e = state.ext.find(x => x.res === a.res);
       if (!e) { e = { id: state.seq++, res: a.res, count: 0 }; state.ext.push(e); }
@@ -283,8 +340,9 @@ function doAction(rule) {
     case 'buildGen': {
       const def = GENS[a.gen];
       if (!def || !genUnlocked(a.gen)) return '발전기 잠김';
-      const total = Object.fromEntries(Object.entries(buildCost(def.build)).map(([cn, n]) => [cn, n * amount]));
-      if (!canAfford(total)) return '건설 자재 부족';
+      const total = scaleCost(buildCost(def.build), amount);
+      const miss = shortfall(total);
+      if (miss) return miss;
       pay(total);
       let g = state.gens.find(x => x.key === a.gen);
       if (!g) { g = { id: state.seq++, key: a.gen, count: 0 }; state.gens.push(g); }
@@ -298,7 +356,7 @@ function doAction(rule) {
       const n = Math.min(stockOf(a.item), amount);
       if (n < 1) return '재고 없음';
       addStock(a.item, -n);
-      const gain = Math.max(1, Math.round(pts * n / 10));
+      const gain = Math.max(1, Math.round(pts * n / 10 * (state.sellMult || 1)));
       state.credits += gain;
       return true;
     }
@@ -306,8 +364,9 @@ function doAction(rule) {
       const t = techById[a.tech];
       if (!t) return '없는 연구';
       if (hasTech(t.id)) return '이미 완료';
-      if (state.credits < t.credits) return '크레딧 부족';
-      if (!canAfford(t.cost)) return '연구 자재 부족';
+      if (state.credits < t.credits) return `크레딧 부족 ${Math.floor(state.credits)}/${t.credits}`;
+      const missT = shortfall(t.cost);
+      if (missT) return missT;
       state.credits -= t.credits;
       pay(t.cost);
       state.techs.push(t.id);
@@ -318,7 +377,8 @@ function doAction(rule) {
     case 'deliver': {
       const c = CONTRACTS[state.contract];
       if (!c) return '남은 계약 없음';
-      if (!canAfford(c.need)) return '납품 수량 부족';
+      const missC = shortfall(c.need);
+      if (missC) return missC.replace('자재', '납품');
       pay(c.need);
       state.credits += c.reward;
       state.contract++;
