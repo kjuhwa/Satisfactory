@@ -7,11 +7,12 @@
  *
  * - 정적 파일: 저장소 루트(game/, web/, game/icons/ ...)를 그대로 서빙
  * - 저장 API : 플레이어 코드(8자) 하나로 어느 기기에서든 같은 저장을 읽고 쓴다
- *     POST   /api/save/new        -> { code }              새 코드 발급
- *     GET    /api/save/:code      -> { code, savedAt, state } | 404
- *     PUT    /api/save/:code      body { savedAt, state }  저장 (오래된 저장은 409)
- *     DELETE /api/save/:code      저장 삭제
- * - 저장 파일: game/saves/<code>.json
+ *     POST   /api/save/new             -> { code }              새 코드 발급
+ *     GET    /api/save/:code[/:slot]   -> { code, savedAt, state } | 404
+ *     PUT    /api/save/:code[/:slot]   body { savedAt, state }  저장 (오래된 저장은 409)
+ *     DELETE /api/save/:code[/:slot]   저장 삭제
+ *   :slot 은 게임별 칸 (생략 = main). 코드 하나로 여러 게임의 저장을 따로 보관한다.
+ * - 저장 파일: game/saves/<code>.json (main) · game/saves/<code>__<slot>.json
  */
 'use strict';
 
@@ -42,7 +43,10 @@ function newCode() {
 }
 
 const normalizeCode = raw => String(raw || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-const savePath = code => path.join(SAVE_DIR, `${code}.json`);
+const SLOT_RE = /^[a-z0-9][a-z0-9-]{0,23}$/;
+// main 슬롯은 예전 경로와 파일명을 그대로 유지한다 (기존 저장 호환)
+const savePath = (code, slot) =>
+  path.join(SAVE_DIR, slot && slot !== 'main' ? `${code}__${slot}.json` : `${code}.json`);
 
 /* ---------- HTTP 유틸 ---------- */
 function sendJson(res, status, obj) {
@@ -108,28 +112,30 @@ async function serveStatic(req, res, urlPath) {
 }
 
 /* ---------- 저장 API ---------- */
-async function readSave(code) {
-  try { return JSON.parse(await fsp.readFile(savePath(code), 'utf8')); }
+async function readSave(code, slot) {
+  try { return JSON.parse(await fsp.readFile(savePath(code, slot), 'utf8')); }
   catch { return null; }
 }
 
-async function writeSave(code, record) {
-  const tmp = `${savePath(code)}.tmp`;
+async function writeSave(code, slot, record) {
+  const tmp = `${savePath(code, slot)}.tmp`;
   await fsp.writeFile(tmp, JSON.stringify(record), 'utf8');
-  await fsp.rename(tmp, savePath(code));   // 쓰다 만 파일이 남지 않도록 원자적 교체
+  await fsp.rename(tmp, savePath(code, slot));   // 쓰다 만 파일이 남지 않도록 원자적 교체
 }
 
 async function handleApi(req, res, urlPath) {
-  const m = /^\/api\/save(?:\/([^/]*))?$/.exec(urlPath);
+  const m = /^\/api\/save(?:\/([^/]*))?(?:\/([^/]*))?$/.exec(urlPath);
   if (!m) return sendJson(res, 404, { error: 'unknown endpoint' });
   const seg = m[1] || '';
+  const slot = m[2] ? m[2].toLowerCase() : 'main';
+  if (!SLOT_RE.test(slot)) return sendJson(res, 400, { error: 'invalid slot' });
 
   // 새 코드 발급
   if (req.method === 'POST' && seg === 'new') {
     for (let i = 0; i < 20; i++) {
       const code = newCode();
-      if (!fs.existsSync(savePath(code))) {
-        await writeSave(code, { code, savedAt: 0, state: null, updatedAt: new Date().toISOString() });
+      if (!fs.existsSync(savePath(code, 'main'))) {
+        await writeSave(code, 'main', { code, savedAt: 0, state: null, updatedAt: new Date().toISOString() });
         return sendJson(res, 201, { code });
       }
     }
@@ -140,31 +146,32 @@ async function handleApi(req, res, urlPath) {
   if (!CODE_RE.test(code)) return sendJson(res, 400, { error: 'invalid code' });
 
   if (req.method === 'GET') {
-    const rec = await readSave(code);
+    const rec = await readSave(code, slot);
     if (!rec || !rec.state) return sendJson(res, 404, { error: 'no save' });
-    return sendJson(res, 200, { code, savedAt: rec.savedAt || 0, state: rec.state });
+    return sendJson(res, 200, { code, slot, savedAt: rec.savedAt || 0, state: rec.state });
   }
 
   if (req.method === 'PUT' || req.method === 'POST') {
     let body;
     try { body = await readBody(req); }
     catch (e) { return sendJson(res, 400, { error: e.message }); }
-    if (!body || typeof body.state !== 'object' || body.state === null || !Array.isArray(body.state.nodes)) {
+    // 게임마다 저장 형태가 다르므로 "객체인가"만 본다 (크기는 MAX_BODY 로 제한)
+    if (!body || typeof body.state !== 'object' || body.state === null || Array.isArray(body.state)) {
       return sendJson(res, 400, { error: 'invalid state' });
     }
     const savedAt = Number(body.savedAt) || Date.now();
-    const cur = await readSave(code);
+    const cur = await readSave(code, slot);
     // 다른 기기가 더 최신 저장을 올려둔 경우 덮어쓰지 않는다 (force 로 강제 가능)
     if (cur && cur.state && (cur.savedAt || 0) > savedAt && !body.force) {
       return sendJson(res, 409, { error: 'stale', savedAt: cur.savedAt });
     }
-    await writeSave(code, { code, savedAt, state: body.state, updatedAt: new Date().toISOString() });
-    return sendJson(res, 200, { code, savedAt });
+    await writeSave(code, slot, { code, slot, savedAt, state: body.state, updatedAt: new Date().toISOString() });
+    return sendJson(res, 200, { code, slot, savedAt });
   }
 
   if (req.method === 'DELETE') {
-    try { await fsp.unlink(savePath(code)); } catch { /* 이미 없음 */ }
-    return sendJson(res, 200, { code, deleted: true });
+    try { await fsp.unlink(savePath(code, slot)); } catch { /* 이미 없음 */ }
+    return sendJson(res, 200, { code, slot, deleted: true });
   }
 
   return sendJson(res, 405, { error: 'method not allowed' });

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>규칙 공장 — 자동화 스크립트 방치형</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="head-left">
+    <h1>🤖 규칙 공장</h1>
+    <p class="sub">직접 짓지 않는다 — 규칙을 짜면 컨트롤러가 공장을 굴린다</p>
+  </div>
+  <div class="head-right">
+    <div class="meter">
+      <div class="meter-label">전력 <span id="power-text">0 / 20 MW</span></div>
+      <div class="bar"><div id="power-fill"></div></div>
+    </div>
+    <div class="meter">
+      <div class="meter-label">제어 대역폭 <span id="bw-text">0 / 6</span></div>
+      <div class="bar"><div id="bw-fill"></div></div>
+    </div>
+    <div id="credits" class="credits">🪙 0</div>
+    <div class="cloud-box">
+      <div id="cloud-code-box" title="클릭하면 코드 복사 — 다른 기기에서 이 코드로 이어서 할 수 있습니다">
+        코드 <span id="cloud-code">—</span>
+      </div>
+      <div id="cloud-status"></div>
+    </div>
+    <button id="btn-cloud-code" class="ghost">코드 입력</button>
+    <button id="btn-save" class="ghost">저장</button>
+    <button id="btn-reset" class="ghost danger">초기화</button>
+  </div>
+</header>
+
+<div id="banner" hidden></div>
+
+<div id="layout">
+  <aside class="col col-left">
+    <section class="panel">
+      <h2>납품 계약 <span class="hint">이 게임의 목표</span></h2>
+      <div id="contract-body"></div>
+    </section>
+    <section class="panel">
+      <h2>연구 <span class="hint">대역폭·슬롯·기계 해금</span></h2>
+      <div id="tech-body"></div>
+    </section>
+  </aside>
+
+  <main class="col col-mid">
+    <section class="panel grow">
+      <h2>규칙 <span class="hint">위에 있는 규칙이 대역폭을 먼저 쓴다 · 조건이 맞으면 행동이 실행된다</span></h2>
+      <div id="rule-list"></div>
+    </section>
+    <section class="panel">
+      <h2>기록</h2>
+      <div id="log-body"></div>
+    </section>
+  </main>
+
+  <aside class="col col-right">
+    <section class="panel">
+      <h2>공장 현황</h2>
+      <div id="factory-body"></div>
+    </section>
+    <section class="panel grow">
+      <h2>재고</h2>
+      <table id="stock-table"></table>
+    </section>
+  </aside>
+</div>
+
+<footer>
+  수치는 Satisfactory 1.0 실제 데이터(레시피·전력·건설 비용). 규칙은 매 틱 위에서부터 평가되며,
+  평가 1 · 발동 5 만큼 대역폭을 씁니다. 대역폭이 모자라면 아래쪽 규칙은 그 틱에 아예 평가되지 않습니다.
+</footer>
+
+<script>window.CLOUD_SLOT = 'rulefactory';</script>
+<script src="../web/data.js"></script>
+<script src="../game/cloud.js"></script>
+<script src="sim.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

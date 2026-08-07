@@ -7,6 +7,9 @@
 const Cloud = (() => {
   const CODE_KEY = 'sfy-cloud-code';
   const URL_KEY = 'sfy-cloud-url';
+  // 게임별 저장 칸. 코드는 공유하고 저장만 따로 보관한다 (window.CLOUD_SLOT 으로 지정)
+  const SLOT = (typeof window !== 'undefined' && window.CLOUD_SLOT) || 'main';
+  const savePath = code => `/api/save/${code}` + (SLOT === 'main' ? '' : `/${SLOT}`);
   const TIMEOUT = 6000;
   const PUSH_DELAY = 3000;   // 저장 후 서버 반영까지 묶는 시간
 
@@ -65,7 +68,7 @@ const Cloud = (() => {
         setStatus('synced', '새 코드 발급됨');
         return null;
       }
-      const res = await api(`/api/save/${code}`);
+      const res = await api(savePath(code));
       if (res.status === 404) { setStatus('synced', '서버에 저장 없음'); return null; }
       if (!res.ok || !res.data || !res.data.state) { setStatus('offline', '서버 응답 오류 · 로컬 저장'); return null; }
       setStatus('synced', '');
@@ -84,7 +87,7 @@ const Cloud = (() => {
     pushing = true;
     setStatus('syncing', '저장 중…');
     try {
-      const res = await api(`/api/save/${code}`, {
+      const res = await api(savePath(code), {
         method: 'PUT',
         body: JSON.stringify({ savedAt: state.savedAt || Date.now(), state: state, force: !!force }),
       });
@@ -122,7 +125,7 @@ const Cloud = (() => {
     const c = normalize(raw);
     if (c.length !== 8) throw new Error('코드는 8자리입니다.');
     if (!available()) throw new Error('서버에 연결할 수 없습니다.');
-    const res = await api(`/api/save/${c}`);
+    const res = await api(savePath(c));
     if (res.status === 400) throw new Error('코드 형식이 올바르지 않습니다.');
     if (!res.ok && res.status !== 404) throw new Error('서버에 연결할 수 없습니다.');
     code = c;
