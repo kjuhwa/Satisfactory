@@ -192,9 +192,10 @@ const pay = cost => { for (const [cn, n] of Object.entries(cost)) addStock(cn, -
 const refund = cost => { for (const [cn, n] of Object.entries(cost)) addStock(cn, n); };
 const buildCost = cn => Object.fromEntries(D.build[cn]);
 
-function save() {
+function save(opts = {}) {
   state.savedAt = Date.now();
   localStorage.setItem(SAVE_KEY, JSON.stringify(state));
+  Cloud.push(state, opts);   // 서버에도 반영 (서버 없으면 무시)
 }
 
 function migrateSidebarGens(s) {
@@ -1843,17 +1844,8 @@ function update() {
   for (const fn of updaters) fn();
 }
 
-/* ---------- 시작 ---------- */
-function init() {
-  state = load() || freshState();
-  if (state._migrated) {
-    delete state._migrated;
-    showBanner('🔧 공장이 그래프 방식으로 개편되어 기존 기계·채굴기 비용이 전액 재고로 환불되었습니다. 아래 공장 배치에서 다시 연결해 보세요!');
-  } else if (state._genMigrated) {
-    delete state._genMigrated;
-    showBanner('⚡ 발전기가 캔버스 노드로 바뀌었습니다. 비용은 환불됐으니 툴바의 "발전기 추가"로 배치하고 석탄·물을 연결하세요!');
-  }
-
+/* ---------- 오프라인 진행 ---------- */
+function applyOffline() {
   const elapsedSec = Math.min(4 * 3600, (Date.now() - (state.savedAt || Date.now())) / 1000);
   if (elapsedSec > 10) {
     const steps = Math.floor(elapsedSec / 5);
@@ -1861,10 +1853,78 @@ function init() {
     showBanner(`⏰ 오프라인 ${Math.floor(elapsedSec / 60)}분 동안 공장이 가동됐습니다.`);
     setTimeout(() => { $('banner').hidden = true; }, 6000);
   }
-  if (state.won) showBanner('🎉 프로젝트 조립 완료! FICSIT이 매우 만족했습니다. 자유롭게 확장하세요.');
+}
+
+/* ---------- 클라우드 UI ---------- */
+function initCloudUI() {
+  const codeEl = $('cloud-code');
+  const statusEl = $('cloud-status');
+
+  Cloud.onChange((status, text, code) => {
+    codeEl.textContent = code ? code.replace(/(.{4})(.{4})/, '$1-$2') : '—';
+    const label = { syncing: '동기화 중…', synced: '☁ 서버 저장됨', offline: '💾 로컬 저장', conflict: '⚠ 충돌', idle: '' };
+    statusEl.textContent = text || label[status] || '';
+    statusEl.dataset.state = status;
+  });
+
+  $('cloud-code-box').addEventListener('click', async () => {
+    if (Cloud.code && navigator.clipboard) {
+      try { await navigator.clipboard.writeText(Cloud.code); showBanner(`📋 코드 ${Cloud.code} 를 복사했습니다. 다른 기기에서 "코드 입력"에 붙여넣으세요.`); } catch { /* 무시 */ }
+    }
+  });
+
+  $('btn-cloud-code').addEventListener('click', async () => {
+    if (!Cloud.available()) {
+      const url = prompt('저장 서버 주소를 입력하세요 (예: http://192.168.0.10:8787)', Cloud.serverUrl());
+      if (url === null) return;
+      Cloud.setServerUrl(url);
+      location.reload();
+      return;
+    }
+    const input = prompt('다른 기기에서 쓰던 코드를 입력하세요 (8자리). 현재 진행은 그 코드의 저장으로 대체됩니다.', Cloud.code || '');
+    if (!input) return;
+    try {
+      const remote = await Cloud.useCode(input);
+      if (!remote) {
+        showBanner('해당 코드에 저장이 없습니다. 지금 진행 상황을 이 코드로 저장합니다.');
+        save({ immediate: true, force: true });
+        return;
+      }
+      state = remote;
+      applyOffline();
+      rebuild();
+      showBanner('☁ 서버 저장을 불러왔습니다.');
+    } catch (e) {
+      alert(e.message);
+    }
+  });
+}
+
+/* ---------- 시작 ---------- */
+async function init() {
+  state = load() || freshState();
+  const local = state.savedAt || 0;
 
   initFactoryEvents();
+  initCloudUI();
   rebuild();
+
+  // 서버 저장이 더 최신이면 그쪽을 쓴다 (다른 기기에서 이어서 하기)
+  const remote = await Cloud.pull();
+  if (remote && (remote.savedAt || 0) > local) state = remote;
+
+  if (state._migrated) {
+    delete state._migrated;
+    showBanner('🔧 공장이 그래프 방식으로 개편되어 기존 기계·채굴기 비용이 전액 재고로 환불되었습니다. 아래 공장 배치에서 다시 연결해 보세요!');
+  } else if (state._genMigrated) {
+    delete state._genMigrated;
+    showBanner('⚡ 발전기가 캔버스 노드로 바뀌었습니다. 비용은 환불됐으니 툴바의 "발전기 추가"로 배치하고 석탄·물을 연결하세요!');
+  }
+  applyOffline();
+  if (state.won) showBanner('🎉 프로젝트 조립 완료! FICSIT이 매우 만족했습니다. 자유롭게 확장하세요.');
+  rebuild();
+  save({ immediate: true });
+
   let lastTick = performance.now();
   setInterval(() => {
     const now = performance.now();
@@ -1873,7 +1933,9 @@ function init() {
     tick(dtMin);
     update();
   }, 200);
-  setInterval(save, 10000);
+  setInterval(() => save(), 10000);
+  window.addEventListener('beforeunload', () => { save({ immediate: true }); });
+  document.addEventListener('visibilitychange', () => { if (document.hidden) save({ immediate: true }); });
   // 오디오는 첫 사용자 입력 후에만 생성 가능 (브라우저 정책)
   document.addEventListener('pointerdown', () => {
     if (!audioCtx) {
@@ -1885,7 +1947,7 @@ function init() {
   muteBtn.addEventListener('click', () => { state.muted = !state.muted; refreshMute(); save(); });
   refreshMute();
 
-  $('btn-save').addEventListener('click', () => { save(); });
+  $('btn-save').addEventListener('click', () => { save({ immediate: true }); });
   // 공장 설계 내보내기 (JSON 파일 다운로드)
   $('btn-export').addEventListener('click', () => {
     save();
@@ -1912,7 +1974,7 @@ function init() {
       migrateSidebarGens(s);
       state = withDefaults(s);
       state.savedAt = Date.now(); // 오프라인 진행 소급 방지
-      save();
+      save({ immediate: true, force: true });   // 가져온 설계를 서버에도 반영
       $('banner').hidden = true;
       rebuild();
     } catch (e) {
@@ -1920,11 +1982,12 @@ function init() {
     }
   });
   $('btn-reset').addEventListener('click', () => {
-    if (confirm('정말 처음부터 다시 시작할까요? 저장이 삭제됩니다.')) {
+    if (confirm('정말 처음부터 다시 시작할까요? 서버 저장도 함께 삭제됩니다.')) {
       localStorage.removeItem(SAVE_KEY);
       state = freshState();
       $('banner').hidden = true;
       rebuild();
+      save({ immediate: true, force: true });   // 서버 저장도 초기 상태로 덮어쓴다
     }
   });
 }

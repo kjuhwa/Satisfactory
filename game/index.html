@@ -18,6 +18,13 @@
       <div class="power-bar"><div id="power-fill"></div></div>
     </div>
     <button id="btn-mute" class="ghost" title="효과음 켜기/끄기">🔊</button>
+    <div class="cloud-box">
+      <div id="cloud-code-box" title="클릭하면 코드 복사 — 다른 기기에서 이 코드를 입력하면 이어서 할 수 있습니다">
+        코드 <span id="cloud-code">—</span>
+      </div>
+      <div id="cloud-status"></div>
+    </div>
+    <button id="btn-cloud-code" class="ghost">코드 입력</button>
     <button id="btn-save" class="ghost">저장</button>
     <button id="btn-export" class="ghost">내보내기</button>
     <button id="btn-import" class="ghost">가져오기</button>
@@ -105,6 +112,7 @@
 <footer>수치 출처: Satisfactory 1.0 실제 데이터 (레시피·전력·건설 비용·발전기). 간략화: 노드 순도/오버클럭 없음, 유휴 기계도 전력 소비, 질소는 간이 추출기. · 캔버스 빈 곳을 잡고 드래그하면 화면이 이동합니다.</footer>
 
 <script src="../web/data.js"></script>
+<script src="cloud.js"></script>
 <script src="game.js"></script>
 </body>
 </html>

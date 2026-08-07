@@ -15,8 +15,51 @@
   공장 설계 JSON 내보내기/가져오기 지원.
   출하 노드에 연결된 아이템만 재고로 들어오고, 그 재고로 마일스톤 8개를 달성하는 것이 목표.
   localStorage 자동 저장 + 오프라인 진행(최대 4시간).
+  `node game/server.js` 로 저장 서버를 띄우면 진행 상황이 서버에 저장되어
+  다른 기기·다른 브라우저에서 이어서 할 수 있다 (아래 "저장 서버" 참고).
 - **Item Spawner 모드** (`mods/ItemSpawner/`) — `/give` 채팅 명령어로 아이템을 지급하는
   SML 치트 모드 소스. 빌드 방법은 `mods/ItemSpawner/README.md` 참고.
+
+# 방치형 공장 게임 — 저장 서버
+
+게임은 기본적으로 브라우저 localStorage에 저장되므로 기기를 옮기면 진행이 이어지지 않는다.
+저장 서버를 띄우면 **플레이어 코드 8자리**로 어느 기기에서든 같은 저장을 이어서 할 수 있다.
+
+## 실행 (Node 18+, 의존성 없음)
+
+```powershell
+node game\server.js            # http://localhost:8787/game/ 접속
+$env:PORT=3000; node game\server.js
+```
+
+서버는 정적 파일(게임·플래너·아이콘)까지 함께 서빙하므로, 이 주소로 접속하면 그대로 플레이된다.
+같은 네트워크의 다른 기기에서는 `http://<PC의 IP>:8787/game/` 로 접속한다.
+외부(집 밖)에서도 하려면 이 서버를 VPS·Fly.io·Render 등에 올리거나 Cloudflare Tunnel 등으로 노출하면 된다.
+
+## 다른 기기에서 이어서 하기
+
+1. 서버로 접속하면 헤더에 `코드 ABCD-1234` 가 표시된다 (최초 접속 시 자동 발급).
+2. 코드를 클릭하면 클립보드에 복사된다.
+3. 다른 기기에서 같은 서버에 접속 → **코드 입력** 버튼 → 코드 붙여넣기 → 그 저장을 불러온다.
+
+- 저장은 자동(10초 주기)·수동(저장 버튼)·탭 종료 시 서버로 전송된다.
+- 서버 저장이 로컬보다 최신이면 접속 시 서버 쪽을 불러온다 (오프라인 진행도 서버 시각 기준으로 계산).
+- 두 기기에서 동시에 플레이해 오래된 저장을 올리면 서버가 거부하고 `⚠ 충돌` 이 표시된다. 새로고침하면 최신 저장을 받는다.
+- 서버가 꺼져 있거나 `game/index.html` 을 파일로 직접 열면 `💾 로컬 저장` 으로 표시되며 기존처럼 localStorage로 동작한다.
+  파일로 열었을 때 서버를 쓰려면 **코드 입력** 버튼을 눌러 서버 주소(`http://호스트:8787`)를 먼저 등록한다.
+
+> 코드는 아이디 겸 비밀번호 역할을 한다(계정·비밀번호 없음). 공개 인터넷에 올릴 계획이면 코드를 남과 공유하지 말 것.
+
+저장 파일은 `game/saves/<코드>.json` 에 쌓인다 (`SAVE_DIR` 환경변수로 위치 변경 가능, git 추적 제외).
+
+### API
+
+| 메서드 | 경로 | 설명 |
+|---|---|---|
+| POST | `/api/save/new` | 새 플레이어 코드 발급 |
+| GET | `/api/save/:code` | 저장 조회 (없으면 404) |
+| PUT | `/api/save/:code` | 저장 (`{savedAt, state, force?}`, 서버가 더 최신이면 409) |
+| DELETE | `/api/save/:code` | 저장 삭제 |
 
 # 공장 플래너
 
@@ -54,6 +97,8 @@ tools/build_data.py   raw_data.json + raw_ko.json → web/data.js 변환 스크�
 raw_data.json    원본 게임 데이터 (SatisfactoryTools 1.0, data1.0.json)
 raw_ko.json      공식 한국어 명칭 (satisfactory-calculator.com /ko/api/game)
 game/icons/      아이템·건물 아이콘 168개 (tools/fetch_icons.py 로 다운로드)
+game/server.js   저장 서버 (정적 서빙 + 저장 API, 의존성 없음)
+game/cloud.js    클라이언트 동기화 계층 (코드 발급·불러오기·서버 저장)
 ```
 
 ## 데이터 갱신
