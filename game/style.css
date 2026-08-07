@@ -205,6 +205,7 @@ select {
     #1b1813;
   background-size: 24px 24px, 24px 24px, auto;
 }
+/* 크기는 resizeCanvas() 가 노드 범위에 맞춰 늘린다 (아래는 초기값) */
 #canvas-inner { position: relative; width: 2400px; height: 1400px; transform-origin: 0 0; }
 #edge-svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 #edge-svg path.edge { stroke: var(--accent-dim); stroke-width: 2.5; fill: none; pointer-events: none; }
@@ -407,6 +408,21 @@ select {
 .fnode-foot .clk.oc { color: var(--accent); border-color: var(--accent-dim); }
 .fnode-foot .tgt { font-size: 10.5px; padding: 1px 6px; }
 .fnode-foot .tgt.on { color: var(--accent); border-color: var(--accent-dim); }
+
+/* 켜진 툴바 토글 */
+.factory-bar button.on { background: var(--accent); color: #1b1104; border-color: var(--accent); }
+
+/* 축소 표시: 노드가 많을 때 한 화면에 더 담기 위해 부가 정보를 감춘다 */
+.compact .fnode { min-width: 128px; max-width: 168px; font-size: 11px; }
+.compact .fnode-cost { display: none; }
+.compact .fnode .port .rate { display: none; }
+.compact .fnode .port .buf { display: none; }
+.compact .fnode-why { display: none; }
+.compact .fnode-head { padding: 4px 7px; }
+.compact .fnode-foot { padding: 3px 6px; gap: 3px; }
+.compact .fnode-foot .hint { display: none; }
+.compact .fnode-foot .clk, .compact .fnode-foot .tgt { font-size: 9.5px; padding: 0 4px; }
+.compact .fnode-body { padding: 3px 6px; }
 
 /* 자동화 패널 */
 .auto-row {

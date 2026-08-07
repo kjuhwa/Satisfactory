@@ -164,6 +164,19 @@ function freshState() {
 }
 
 function withDefaults(s) {
+  // 손상되거나 손으로 만든 저장을 가져와도 게임이 멈추지 않도록 최소 형태를 보장
+  const fresh = freshState();
+  for (const k of ['nodes', 'edges', 'machines', 'raws', 'gensUnlocked', 'altUnlocked']) {
+    if (!Array.isArray(s[k])) s[k] = fresh[k];
+  }
+  if (!s.stock || typeof s.stock !== 'object') s.stock = {};
+  if (!s.gens || typeof s.gens !== 'object') s.gens = { coal: 0, fuel: 0 };
+  if (typeof s.ms !== 'number' || !isFinite(s.ms)) s.ms = 0;
+  if (typeof s.seq !== 'number' || !isFinite(s.seq)) {
+    s.seq = Math.max(1, ...s.nodes.map(n => n.id || 0), ...s.edges.map(e => e.id || 0)) + 1;
+  }
+  for (const n of s.nodes) if (!n.buf || typeof n.buf !== 'object') n.buf = { in: {}, out: {} };
+
   s.auto = { buy: false, ms: false, belt: false, shard: false, ...(s.auto || {}) };
   s.sinkPts ??= 0;
   s.coupons ??= 0;
@@ -763,6 +776,8 @@ function buildHand() {
 const drag = { mode: null, node: null, dx: 0, dy: 0, fromNode: null, fromItem: null, pendingRebuild: false };
 let portEls = {}; // "nodeId|item|dir" -> element
 
+const WORLD_W = 8000, WORLD_H = 6000;  // 노드를 놓을 수 있는 최대 범위 (캔버스는 내용에 맞춰 늘어남)
+const ZOOM_MIN = 0.2;                  // 공장이 커지면 더 많이 축소할 수 있어야 한다
 const zoomOf = () => state.zoom || 1;
 
 function applyZoom() {
@@ -967,9 +982,34 @@ function removeNode(id) {
   rebuild();
 }
 
+/** 새 노드는 지금 보고 있는 화면 안의 빈 자리에 놓는다 (멀리 생겨서 못 찾는 일 방지) */
 function spawnXY() {
-  const k = state.nodes.length;
-  return { x: 60 + (k % 5) * 210, y: 60 + Math.floor(k / 5) * 170 % 900 };
+  const wrap = $('canvas-wrap');
+  const z = zoomOf();
+  const x0 = Math.round(wrap.scrollLeft / z) + 40;
+  const y0 = Math.round(wrap.scrollTop / z) + 40;
+  const W = 250, H = 200;
+  for (let row = 0; row < 20; row++) {
+    for (let col = 0; col < 10; col++) {
+      const x = x0 + col * W, y = y0 + row * H;
+      const busy = state.nodes.some(n => Math.abs(n.x - x) < W * 0.8 && Math.abs(n.y - y) < H * 0.8);
+      if (!busy) return { x, y };
+    }
+  }
+  return { x: x0, y: y0 };
+}
+
+/** 캔버스(및 연결선 SVG)를 노드가 모두 들어가는 크기로 넓힌다.
+ *  고정 크기였을 때는 이 범위 밖 노드의 연결선이 SVG 뷰포트 밖이라 보이지 않았다. */
+function resizeCanvas() {
+  let maxX = 0, maxY = 0;
+  for (const n of state.nodes) {
+    maxX = Math.max(maxX, n.x);
+    maxY = Math.max(maxY, n.y);
+  }
+  const inner = $('canvas-inner');
+  inner.style.width = Math.max(2400, maxX + 500) + 'px';
+  inner.style.height = Math.max(1400, maxY + 420) + 'px';
 }
 
 function addNode(node) {
@@ -1138,6 +1178,14 @@ function buildFactoryBar() {
   awBtn.style.display = state.ms >= 2 ? '' : 'none';
   awBtn.onclick = () => addNode({ type: 'awesink', count: 1 });
   $('open-plan').onclick = () => openPlanner();
+  $('btn-tidy').onclick = () => {
+    if (state.nodes.length > 1 && !confirm('모든 노드를 연결 순서대로 재배치할까요? (직접 잡아둔 위치는 사라집니다)')) return;
+    tidyLayout();
+  };
+  $('btn-fit').onclick = () => fitView();
+  const cBtn = $('btn-compact');
+  cBtn.onclick = () => { setCompact(!state.compact); cBtn.classList.toggle('on', !!state.compact); };
+  cBtn.classList.toggle('on', !!state.compact);
 
   onUpdate(() => {
     $('add-miner').disabled = !state.miners;
@@ -1152,6 +1200,7 @@ function buildFactoryBar() {
 function buildFactory() {
   closeEdgeMenu();
   applyZoom();
+  document.body.classList.toggle('compact', !!state.compact);
   portEls = {};
   const layer = $('node-layer');
   layer.textContent = '';
@@ -1363,7 +1412,82 @@ function buildFactory() {
       path.classList.toggle('flow', (lastEdgeFlow[+path.dataset.id] || 0) > 1e-6);
     }
   });
+  resizeCanvas();
   layoutEdges();
+}
+
+/* ---------- 배치 정리 도구 ---------- */
+
+/** 연결 관계대로 왼→오 단계별 정렬 (원자재 → 가공 → 출하) */
+function tidyLayout() {
+  const incoming = {};
+  for (const n of state.nodes) incoming[n.id] = [];
+  for (const e of state.edges) if (incoming[e.to.node]) incoming[e.to.node].push(e.from.node);
+
+  const depth = {};
+  for (const n of state.nodes) depth[n.id] = 0;
+  // 순환이 있어도 멈추도록 반복 횟수를 노드 수로 제한
+  for (let i = 0; i < state.nodes.length + 1; i++) {
+    let changed = false;
+    for (const n of state.nodes) {
+      const d = Math.max(0, ...incoming[n.id].map(id => (depth[id] ?? 0) + 1));
+      if (d > depth[n.id]) { depth[n.id] = d; changed = true; }
+    }
+    if (!changed) break;
+  }
+  // 출하·싱크는 항상 맨 오른쪽 열로
+  const maxD = Math.max(0, ...state.nodes.map(n => depth[n.id]));
+  for (const n of state.nodes) {
+    if (n.type === 'sink' || n.type === 'awesink') depth[n.id] = maxD + 1;
+  }
+
+  const colCount = {};
+  const ordered = [...state.nodes].sort((a, b) => depth[a.id] - depth[b.id] || a.id - b.id);
+  for (const n of ordered) {
+    const d = depth[n.id];
+    colCount[d] = (colCount[d] ?? 0) + 1;
+    n.x = 60 + d * 280;
+    n.y = 60 + (colCount[d] - 1) * 200;
+  }
+  save();
+  rebuild();
+  fitView();
+  showBanner('🧹 연결 순서대로 정리했습니다.');
+  setTimeout(() => { $('banner').hidden = true; }, 3000);
+}
+
+/** 모든 노드가 한 화면에 들어오도록 확대율·스크롤 조정 */
+function fitView() {
+  const wrap = $('canvas-wrap');
+  const boxes = [...$('node-layer').querySelectorAll('.fnode')];
+  if (!boxes.length) return;
+  let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
+  for (const b of boxes) {
+    const n = nodeById(+b.dataset.id);
+    if (!n) continue;
+    minX = Math.min(minX, n.x);
+    minY = Math.min(minY, n.y);
+    maxX = Math.max(maxX, n.x + b.offsetWidth);
+    maxY = Math.max(maxY, n.y + b.offsetHeight);
+  }
+  const pad = 30;
+  const w = maxX - minX + pad * 2, h = maxY - minY + pad * 2;
+  const z = Math.min(1.5, Math.max(ZOOM_MIN,
+    Math.min(wrap.clientWidth / w, wrap.clientHeight / h)));
+  state.zoom = z;
+  applyZoom();
+  resizeCanvas();
+  wrap.scrollLeft = Math.max(0, (minX - pad) * z);
+  wrap.scrollTop = Math.max(0, (minY - pad) * z);
+  save();
+}
+
+/** 노드가 많을 때 쓰는 축소 표시 (비용·속도 숨김) */
+function setCompact(on) {
+  state.compact = !!on;
+  document.body.classList.toggle('compact', state.compact);
+  layoutEdges();
+  save();
 }
 
 function initFactoryEvents() {
@@ -1423,10 +1547,11 @@ function initFactoryEvents() {
     if (drag.mode && e.buttons === 0) { endDrag(e); return; }
     if (drag.mode === 'node' && drag.node) {
       const pos = canvasPos(e);
-      drag.node.x = Math.max(0, Math.min(2200, pos.x - drag.dx));
-      drag.node.y = Math.max(0, Math.min(1300, pos.y - drag.dy));
+      drag.node.x = Math.max(0, Math.min(WORLD_W, pos.x - drag.dx));
+      drag.node.y = Math.max(0, Math.min(WORLD_H, pos.y - drag.dy));
       const box = $('node-layer').querySelector(`.fnode[data-id="${drag.node.id}"]`);
       if (box) { box.style.left = drag.node.x + 'px'; box.style.top = drag.node.y + 'px'; }
+      resizeCanvas();   // 캔버스 밖으로 나가면 넓혀서 연결선이 잘리지 않게
       layoutEdges();
     } else if (drag.mode === 'edge') {
       const a = portAnchor(drag.fromNode, drag.fromItem, 'out');
@@ -1462,7 +1587,7 @@ function initFactoryEvents() {
   wrap.addEventListener('wheel', e => {
     e.preventDefault();
     const old = zoomOf();
-    const z = Math.min(1.5, Math.max(0.4, old * Math.exp(-e.deltaY * 0.0012)));
+    const z = Math.min(1.5, Math.max(ZOOM_MIN, old * Math.exp(-e.deltaY * 0.0012)));
     if (Math.abs(z - old) < 1e-4) return;
     const rect = wrap.getBoundingClientRect();
     const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
