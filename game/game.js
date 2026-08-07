@@ -158,11 +158,13 @@ function freshState() {
     coupons: 0,
     couponsPrinted: 0,
     altUnlocked: [],
+    auto: { buy: false, ms: false, belt: false, shard: false },
     savedAt: Date.now(),
   };
 }
 
 function withDefaults(s) {
+  s.auto = { buy: false, ms: false, belt: false, shard: false, ...(s.auto || {}) };
   s.sinkPts ??= 0;
   s.coupons ??= 0;
   s.couponsPrinted ??= 0;
@@ -469,6 +471,67 @@ function tick(dtMin) {
   lastRates = {};
   for (const cn of keys) lastRates[cn] = ((state.stock[cn] || 0) - (prev[cn] || 0)) / dtMin;
   lastPower = { supply, demand, eff: powerEff };
+
+  autoStep(); // 자동화도 시뮬레이션의 일부 — 오프라인 진행 중에도 동작
+}
+
+/* ---------- 자동화 ---------- */
+const AUTO_OPTS = [
+  { key: 'buy',   label: '기계 자동 구매',       desc: '각 노드의 🎯 목표 대수까지 재고로 알아서 구매' },
+  { key: 'ms',    label: '마일스톤 자동 달성',   desc: '재료가 모이는 즉시 다음 마일스톤 달성' },
+  { key: 'belt',  label: '벨트 자동 업그레이드', desc: '용량이 꽉 찬 연결선만 다음 티어로 업그레이드' },
+  { key: 'shard', label: '동력 조각 자동 구매',  desc: '쿠폰 3장이 모이면 동력 조각으로 교환' },
+];
+let autoNeedsRebuild = false;   // 해금·벨트 티어처럼 화면을 다시 그려야 하는 변화
+
+function autoStep() {
+  const a = state.auto;
+  if (!a) return;
+
+  // 1) 목표 대수까지 기계 구매 (틱당 노드별 1대 — 재고를 한 번에 비우지 않도록)
+  if (a.buy) {
+    for (const n of state.nodes) {
+      if (n.type === 'sink' || n.type === 'awesink') continue;
+      if (n.count >= (n.want || 0)) continue;
+      if (n.type === 'miner' && depositsLeft(n.resource, n.purity || 'normal') <= 0) continue;
+      const cost = nodeDef(n).cost;
+      if (!canAfford(cost)) continue;
+      pay(cost);
+      n.count++;
+    }
+  }
+
+  // 2) 마일스톤 자동 달성
+  if (a.ms && state.ms < MS.length) {
+    const m = MS[state.ms];
+    if (canAfford(m.cost)) {
+      pay(m.cost);
+      m.apply(state);
+      state.ms++;
+      sfx(state.won ? 'won' : 'milestone');
+      autoNeedsRebuild = true;
+    }
+  }
+
+  // 3) 포화된 벨트만 업그레이드 (여유 있는 연결선은 건드리지 않음)
+  if (a.belt) {
+    for (const e of state.edges) {
+      const t = e.tier || 1;
+      if (t >= 5) continue;
+      if ((lastEdgeFlow[e.id] || 0) < beltOf(e).cap * 0.98) continue;
+      const next = BELT_TIERS[t + 1];
+      if (!canAfford(next.cost)) continue;
+      pay(next.cost);
+      e.tier = t + 1;
+      autoNeedsRebuild = true;
+    }
+  }
+
+  // 4) 쿠폰 → 동력 조각 (하드 드라이브는 선택이 필요하므로 자동화하지 않음)
+  if (a.shard && state.coupons >= 3) {
+    state.coupons -= 3;
+    addStock(SHARD, 1);
+  }
 }
 
 /* ---------- 효과음 (WebAudio 합성, 에셋 없음) ---------- */
@@ -1171,6 +1234,24 @@ function buildFactory() {
       });
       foot.append(minus, cnt, plus, el('span', 'hint',
         def.produces ? `+${def.produces}MW/대` : `${fmtN(def.power)}MW/대`));
+      // 자동 구매 목표 대수
+      const tgt = el('button', 'ghost tgt');
+      tgt.addEventListener('click', () => {
+        const input = prompt(`${def.label} — 자동 구매 목표 대수 (0 = 자동 구매 안 함)`, n.want || 0);
+        if (input === null) return;
+        n.want = Math.max(0, Math.floor(Number(input) || 0));
+        save();
+        update();
+      });
+      foot.append(tgt);
+      onUpdate(() => {
+        const want = n.want || 0;
+        tgt.textContent = '🎯' + want;
+        tgt.classList.toggle('on', want > n.count);
+        tgt.title = want > 0
+          ? `자동 구매 목표 ${want}대 (현재 ${n.count}대) — 자동화 패널의 "기계 자동 구매"가 켜져 있으면 재료가 모이는 대로 지어집니다`
+          : '자동 구매 목표 대수 설정 (클릭)';
+      });
       if (n.type === 'miner' || n.type === 'machine') {
         const clk = el('button', 'ghost clk');
         clk.title = '오버클럭 (동력 조각 필요)';
@@ -1601,17 +1682,22 @@ function autoBuildPlan(plan) {
 
   const producerNode = {}; // item -> nodeId
   const tier = bestMinerTier();
-  for (const cn of Object.keys(plan.raws)) {
+  for (const [cn, need] of Object.entries(plan.raws)) {
     const node = { type: 'miner', resource: cn, count: 0, _depth: 0 };
+    const def = EXT[cn] || MINERS[tier];
     if (!EXT[cn]) {
       node.tier = tier;
       node.purity = ['pure', 'normal', 'impure'].find(p => depositsLeft(cn, p) > 0) || 'normal';
     }
+    // 자동 구매 목표 = 계획상 필요 대수 (순도 배율 반영)
+    node.want = Math.ceil(need / (def.rate * PURITY[node.purity || 'normal'].mult) - 1e-9);
     producerNode[cn] = mk(node).id;
   }
   const maxDepth = Math.max(1, ...plan.recipes.map(e => depthOf(e.recipe.out[0][0], new Set())));
   for (const e of plan.recipes) {
-    const node = mk({ type: 'machine', recipeId: e.recipe.id, count: 0, _depth: Math.max(1, depthOf(e.recipe.out[0][0], new Set())) });
+    const node = mk({ type: 'machine', recipeId: e.recipe.id, count: 0,
+      want: Math.ceil(e.machines - 1e-9),
+      _depth: Math.max(1, depthOf(e.recipe.out[0][0], new Set())) });
     for (const [cn] of e.recipe.out) producerNode[cn] ??= node.id;
   }
   // 연결: 각 기계의 입력 ← 생산자, 목표 → 출하
@@ -1630,7 +1716,7 @@ function autoBuildPlan(plan) {
   }
   save();
   rebuild();
-  showBanner(`📋 ${iname(plan.target)} ${fmtN(plan.rate)}/분 라인이 배치되었습니다 — 각 노드에서 + 로 기계를 구매하세요.`);
+  showBanner(`📋 ${iname(plan.target)} ${fmtN(plan.rate)}/분 라인이 배치되고 🎯 목표 대수가 설정되었습니다 — 자동화 패널의 "기계 자동 구매"를 켜면 재료가 모이는 대로 알아서 지어집니다.`);
   setTimeout(() => { $('banner').hidden = true; }, 6000);
 }
 
@@ -1672,6 +1758,41 @@ function buildTutorial() {
     }
     for (const r of rows) r.row.classList.toggle('current', r.i === firstOpen);
     if (allDone()) { panel.hidden = true; }
+  });
+}
+
+/* --- 자동화 패널 --- */
+function buildAuto() {
+  const panel = $('auto-panel');
+  const show = state.ms >= 2;   // 조립기 해금 이후부터 노출
+  panel.hidden = !show;
+  if (!show) return;
+  const box = $('auto-body');
+  box.textContent = '';
+  for (const o of AUTO_OPTS) {
+    const row = el('label', 'auto-row');
+    const cb = el('input');
+    cb.type = 'checkbox';
+    cb.checked = !!state.auto[o.key];
+    cb.addEventListener('change', () => {
+      state.auto[o.key] = cb.checked;
+      save();
+      update();
+    });
+    const txt = el('span', 'auto-text');
+    txt.append(el('span', 'auto-name', o.label), el('span', 'hint', o.desc));
+    row.append(cb, txt);
+    box.append(row);
+  }
+  const status = el('div', 'auto-status hint');
+  box.append(status);
+  onUpdate(() => {
+    const pend = state.nodes.filter(n => (n.want || 0) > n.count);
+    status.textContent = !state.auto.buy
+      ? '노드 아래 🎯 버튼으로 목표 대수를 정한 뒤 "기계 자동 구매"를 켜세요.'
+      : pend.length
+        ? `구매 대기 ${pend.length}개 노드 — 재료가 모이는 대로 지어집니다.`
+        : '모든 노드가 목표 대수를 채웠습니다.';
   });
 }
 
@@ -1826,11 +1947,13 @@ function buildPower() {
 /* ---------- 조립 ---------- */
 function rebuild() {
   if (drag.mode) { drag.pendingRebuild = true; return; }
+  autoNeedsRebuild = false;
   updaters = [];
   buildTutorial();
   buildMilestone();
   buildGather();
   buildHand();
+  buildAuto();
   buildShop();
   buildFactoryBar();
   buildFactory();
@@ -1849,8 +1972,11 @@ function applyOffline() {
   const elapsedSec = Math.min(4 * 3600, (Date.now() - (state.savedAt || Date.now())) / 1000);
   if (elapsedSec > 10) {
     const steps = Math.floor(elapsedSec / 5);
+    const msBefore = state.ms;
     for (let i = 0; i < steps; i++) tick(5 / 60);
-    showBanner(`⏰ 오프라인 ${Math.floor(elapsedSec / 60)}분 동안 공장이 가동됐습니다.`);
+    const gained = state.ms - msBefore;   // 자동 마일스톤이 방치 중 달성한 수
+    showBanner(`⏰ 오프라인 ${Math.floor(elapsedSec / 60)}분 동안 공장이 가동됐습니다.`
+      + (gained > 0 ? ` 🤖 마일스톤 ${gained}개가 자동 달성되었습니다.` : ''));
     setTimeout(() => { $('banner').hidden = true; }, 6000);
   }
 }
@@ -1931,6 +2057,7 @@ async function init() {
     const dtMin = Math.min(10000, now - lastTick) / 60000;
     lastTick = now;
     tick(dtMin);
+    if (autoNeedsRebuild) { autoNeedsRebuild = false; rebuild(); }
     update();
   }, 200);
   setInterval(() => save(), 10000);

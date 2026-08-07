@@ -405,6 +405,20 @@ select {
 /* 오버클럭 버튼 */
 .fnode-foot .clk { font-size: 10.5px; padding: 1px 6px; }
 .fnode-foot .clk.oc { color: var(--accent); border-color: var(--accent-dim); }
+.fnode-foot .tgt { font-size: 10.5px; padding: 1px 6px; }
+.fnode-foot .tgt.on { color: var(--accent); border-color: var(--accent-dim); }
+
+/* 자동화 패널 */
+.auto-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 5px 0; cursor: pointer;
+  border-bottom: 1px dashed var(--border);
+}
+.auto-row:last-of-type { border-bottom: none; }
+.auto-row input { margin-top: 3px; accent-color: var(--accent); flex: none; }
+.auto-text { display: flex; flex-direction: column; }
+.auto-name { font-weight: 600; }
+.auto-status { margin-top: 6px; }
 
 /* AWESOME 상점 */
 .shop-coupons { font-size: 16px; font-weight: 700; color: var(--accent); }
