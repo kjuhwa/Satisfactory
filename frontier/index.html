@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>개척 원정대 — 텍스트 개척 머드</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="gate">
+  <div class="gate-box">
+    <h1>⛏ 개척 원정대</h1>
+    <p class="tag">여럿이 같은 행성에 강하한다. 좋은 자리는 정해져 있고, 먼저 잡는 사람이 임자다.</p>
+    <div class="gate-row">
+      <input id="name" maxlength="12" placeholder="개척자 이름" autocomplete="off">
+      <button id="btn-join">강하</button>
+    </div>
+    <div id="gate-msg" class="gate-msg"></div>
+    <ul class="gate-help">
+      <li>매장지는 <b>선착순</b>이다. 순도 높은 자리일수록 멀고 위험하고 물이 없다.</li>
+      <li>물이 없으면 그 자리에서 발전할 수 없다 — <b>송전탑</b>으로 전력을 끌어와야 한다.</li>
+      <li>접속을 끊어도 공장은 서버에서 계속 돈다.</li>
+      <li>우주 엘리베이터는 <b>혼자서는 절대 못 짓는다</b>.</li>
+    </ul>
+  </div>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <h1>⛏ 개척 원정대</h1>
+    <div class="hud">
+      <span id="hud-where" class="chip">—</span>
+      <span id="hud-power" class="chip">전력 —</span>
+      <span id="hud-explore" class="chip">탐사 —</span>
+      <span id="hud-online" class="chip">접속 —</span>
+    </div>
+  </header>
+
+  <div id="layout">
+    <main class="term">
+      <div id="out"></div>
+      <div class="prompt">
+        <span class="caret">&gt;</span>
+        <input id="in" autocomplete="off" spellcheck="false"
+               placeholder="명령을 입력하라 — 도움말 / 보기 / 조사 / 북남동서">
+      </div>
+      <div class="quick">
+        <button data-cmd="보기">보기</button>
+        <button data-cmd="조사">조사</button>
+        <button data-cmd="지도">지도</button>
+        <button data-cmd="공장">공장</button>
+        <button data-cmd="전력">전력</button>
+        <button data-cmd="재고">재고</button>
+        <button data-cmd="목표">목표</button>
+        <button data-cmd="누구">누구</button>
+        <button data-cmd="도움말">도움말</button>
+      </div>
+    </main>
+
+    <aside class="side">
+      <section>
+        <h2>이동</h2>
+        <div id="compass" class="compass"></div>
+      </section>
+      <section>
+        <h2>재고</h2>
+        <div id="stock" class="rows"></div>
+      </section>
+      <section>
+        <h2>공동 프로젝트</h2>
+        <div id="project" class="rows"></div>
+      </section>
+    </aside>
+  </div>
+</div>
+
+<script src="client.js"></script>
+</body>
+</html>

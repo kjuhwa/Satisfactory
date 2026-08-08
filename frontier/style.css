@@ -1,0 +1,120 @@
+:root {
+  --bg: #0e1116;
+  --panel: #151a21;
+  --panel2: #1d242d;
+  --border: #2a323d;
+  --text: #d8dee7;
+  --muted: #7d8794;
+  --accent: #fa9549;
+  --good: #6fd08c;
+  --bad: #e56a6a;
+  --node: #d9c26a;
+  --chat: #79b8f0;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 14px/1.55 "Cascadia Mono", "D2Coding", Consolas, "Malgun Gothic", monospace;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+
+/* ---------- 강하 화면 ---------- */
+#gate { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
+.gate-box { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px 30px; }
+.gate-box h1 { margin: 0 0 6px; color: var(--accent); font-size: 26px; }
+.tag { margin: 0 0 20px; color: var(--muted); }
+.gate-row { display: flex; gap: 8px; }
+.gate-msg { min-height: 20px; margin-top: 10px; color: var(--bad); font-size: 13px; }
+.gate-help { margin: 14px 0 0; padding-left: 18px; color: var(--muted); font-size: 12.5px; }
+.gate-help li { margin: 4px 0; }
+.gate-help b { color: var(--text); font-weight: 600; }
+
+input {
+  flex: 1; min-width: 0; font: inherit; padding: 9px 12px;
+  background: var(--panel2); color: var(--text);
+  border: 1px solid var(--border); border-radius: 8px; outline: none;
+}
+input:focus { border-color: var(--accent); }
+button {
+  font: inherit; padding: 9px 16px; cursor: pointer;
+  background: var(--accent); color: #17110a; border: none; border-radius: 8px; font-weight: 700;
+}
+button:disabled { background: transparent; color: transparent; cursor: default; }
+
+/* ---------- 본 화면 ---------- */
+#app { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+header {
+  display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+  padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+}
+header h1 { margin: 0; font-size: 16px; color: var(--accent); }
+.hud { display: flex; gap: 8px; flex-wrap: wrap; margin-left: auto; }
+.chip {
+  padding: 3px 10px; border-radius: 999px; font-size: 12px;
+  background: var(--panel2); border: 1px solid var(--border); color: var(--muted);
+}
+.chip.bad { color: var(--bad); border-color: var(--bad); }
+
+#layout { flex: 1; display: flex; gap: 12px; padding: 12px; min-height: 0; }
+
+.term { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; }
+#out {
+  flex: 1; min-height: 0; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--border); border-radius: 10px;
+  padding: 12px 14px; white-space: pre-wrap; word-break: break-word;
+}
+.ln { margin: 1px 0; }
+.ln.room { color: var(--accent); font-weight: 700; margin-top: 10px; }
+.ln.desc { color: var(--text); }
+.ln.exit { color: var(--chat); margin-top: 4px; }
+.ln.node { color: var(--node); }
+.ln.who { color: var(--chat); }
+.ln.chat { color: var(--chat); }
+.ln.ok { color: var(--good); }
+.ln.err { color: var(--bad); }
+.ln.dim { color: var(--muted); }
+.ln.hint { color: var(--muted); font-style: italic; }
+.ln.echo { color: #55606d; margin-top: 8px; }
+
+.prompt { display: flex; align-items: center; gap: 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 0 12px; }
+.prompt .caret { color: var(--accent); font-weight: 700; }
+.prompt input { background: transparent; border: none; padding: 11px 0; }
+.prompt input:focus { border: none; }
+
+.quick { display: flex; gap: 6px; flex-wrap: wrap; }
+.quick button {
+  background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+  font-weight: 400; padding: 5px 11px; font-size: 12.5px; border-radius: 7px;
+}
+.quick button:hover { color: var(--text); border-color: var(--accent); }
+
+/* ---------- 사이드 ---------- */
+.side { width: 280px; flex: none; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+.side section { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 11px 13px; flex: none; }
+.side h2 { margin: 0 0 8px; font-size: 12px; color: var(--accent); letter-spacing: .04em; }
+
+.compass { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+.compass button {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--border);
+  font-weight: 400; padding: 8px 0; font-size: 13px; border-radius: 7px;
+}
+.compass button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.compass button:disabled { border-color: transparent; }
+
+.rows { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; }
+.row { display: flex; align-items: baseline; gap: 6px; }
+.row .k { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.row .v { font-variant-numeric: tabular-nums; font-weight: 600; }
+.row .r { width: 64px; text-align: right; font-size: 11px; color: var(--muted); }
+.row .r.up { color: var(--good); }
+.row .r.down { color: var(--bad); }
+.row.done .v { color: var(--good); }
+.ptitle { color: var(--text); margin-bottom: 6px; font-size: 12.5px; }
+.dim { color: var(--muted); }
+
+@media (max-width: 900px) {
+  #layout { flex-direction: column; }
+  .side { width: auto; flex: none; flex-direction: row; flex-wrap: wrap; }
+  .side section { flex: 1 1 200px; }
+}

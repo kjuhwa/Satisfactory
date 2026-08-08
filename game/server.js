@@ -20,6 +20,7 @@ const http = require('http');
 const fs = require('fs');
 const fsp = fs.promises;
 const path = require('path');
+const frontier = require('../frontier/world.js');   // 개척 원정대 (머드) — /api/mud/*
 
 const PORT = Number(process.env.PORT) || 8787;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -192,6 +193,7 @@ const server = http.createServer(async (req, res) => {
   }
 
   try {
+    if (urlPath.startsWith('/api/mud/')) return await frontier.handle(req, res, urlPath);
     if (urlPath.startsWith('/api/')) return await handleApi(req, res, urlPath);
     if (req.method === 'GET' || req.method === 'HEAD') return await serveStatic(req, res, urlPath);
     return sendJson(res, 405, { error: 'method not allowed' });
@@ -203,7 +205,9 @@ const server = http.createServer(async (req, res) => {
 });
 
 fs.mkdirSync(SAVE_DIR, { recursive: true });
+frontier.start(SAVE_DIR);        // 머드 세계는 접속자가 없어도 계속 돈다
 server.listen(PORT, HOST, () => {
   console.log(`방치형 공장 서버 실행 중 → http://localhost:${PORT}/game/`);
+  console.log(`개척 원정대(머드)      → http://localhost:${PORT}/frontier/`);
   console.log(`저장 위치: ${SAVE_DIR}`);
 });
