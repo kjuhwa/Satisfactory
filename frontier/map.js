@@ -1,3 +1,8 @@
+(function (root, factory) {
+  // 서버(Node)와 브라우저(GitHub Pages 단독 실행)에서 같은 파일을 쓴다
+  if (typeof module === 'object' && module.exports) module.exports = factory();
+  else root.FrontierMap = factory();
+})(typeof self !== 'undefined' ? self : this, function () {
 'use strict';
 /*
  * 개척 원정대 — 세계 지도
@@ -221,4 +226,5 @@ for (const [id, r] of Object.entries(REGIONS)) {
 const PURITY_NAME = { 0.5: '불순', 1: '보통', 2: '순수' };
 const DANGER_NAME = ['안전', '주의', '위험', '치명'];
 
-module.exports = { REGIONS, DIRS, DIR_ALIAS, OPPOSITE, PURITY_NAME, DANGER_NAME };
+return { REGIONS, DIRS, DIR_ALIAS, OPPOSITE, PURITY_NAME, DANGER_NAME };
+});
