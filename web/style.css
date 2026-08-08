@@ -10,6 +10,11 @@
   --raw: #6fb3e0;
   --byprod: #c9a0e0;
 }
+
+/* hidden 속성이 display 지정에 지지 않도록 (작성자 스타일 > UA 스타일) */
+[hidden] { display: none !important; }
+
+
 * { box-sizing: border-box; }
 body {
   margin: 0;

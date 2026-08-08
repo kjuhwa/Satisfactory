@@ -19,6 +19,10 @@ body {
   display: flex; flex-direction: column; overflow: hidden;
 }
 
+/* #gate·#app 의 display:flex 는 작성자 스타일이라 [hidden] 의 display:none(UA 스타일)을 이긴다.
+   이 한 줄이 없으면 hidden 을 걸어도 강하 화면과 게임 화면이 동시에 떠 있는다. */
+[hidden] { display: none !important; }
+
 /* ---------- 강하 화면 ---------- */
 #gate { flex: 1; display: flex; align-items: center; justify-content: center; padding: 20px; }
 .gate-box { width: min(560px, 100%); background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 28px 30px; }
