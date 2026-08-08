@@ -312,6 +312,33 @@ let lastRates = {};
 let lastPower = { supply: BASE_POWER, demand: 0, eff: 1 };
 let lastEdgeFlow = {}; // edgeId -> 이번 틱에 아이템이 흘렀는지 (연결선 애니메이션용)
 
+/**
+ * 이 노드에 물린 벨트가 이미 꽉 차 있으면 그 합계 용량을 돌려준다 (아니면 null).
+ *
+ * 벨트가 한계면 상류 기계를 늘려 봐야 아무 소용이 없다. 예전에는 이걸 구분하지 않고
+ * "이전 단계 생산을 늘리세요" 라고만 해서, 물 추출기를 16대까지 늘리다 전력이 무너지는
+ * 일이 생겼다 (물은 남아돌고 벨트가 못 나르던 것이다).
+ *
+ * 지난 틱의 흐름을 쓴다 — 진단 문구라 한 틱 늦어도 상관없다.
+ */
+function beltCapped(nodeId, item, dir) {
+  const edges = state.edges.filter(e => dir === 'in'
+    ? (e.to.node === nodeId && e.to.item === item)
+    : (e.from.node === nodeId && e.from.item === item));
+  if (!edges.length) return null;
+  let cap = 0;
+  for (const e of edges) {
+    const c = beltOf(e).cap;
+    if ((lastEdgeFlow[e.id] || 0) < c * 0.98) return null;  // 여유 있는 벨트가 하나라도 있으면 벨트 탓이 아니다
+    cap += c;
+  }
+  return cap;
+}
+
+/** 벨트가 병목일 때 쓰는 안내 — 지금 용량과 필요량을 같이 적는다 */
+const beltWhy = (item, cap, need) =>
+  `벨트 한계: ${iname(item)} ${fmtN(cap)}/분 → ${fmtN(need)}/분 필요 — 연결선을 클릭해 업그레이드하거나 하나 더 이으세요`;
+
 function tick(dtMin) {
   const prev = { ...state.stock };
   const hasInEdge = (id, item) => state.edges.some(e => e.to.node === id && e.to.item === item);
@@ -327,11 +354,12 @@ function tick(dtMin) {
     let frac = 1;
     let limit = null;
     let limitKind = null;
+    let limitNeed = 0;            // 분당 필요량 (벨트 안내에 쓴다)
     for (const [cn, rate] of g.burns) {
       const need = rate * n.count * dtMin;
       if (need > 0) {
         const f = (n.buf.in[cn] || 0) / need;
-        if (f < frac) { frac = f; limit = cn; limitKind = 'in'; }
+        if (f < frac) { frac = f; limit = cn; limitKind = 'in'; limitNeed = rate * n.count; }
       }
     }
     const gcap = BUF_CAP * n.count;
@@ -339,7 +367,7 @@ function tick(dtMin) {
       const need = rate * n.count * dtMin;
       if (need > 0) {
         const f = Math.max(0, gcap - (n.buf.out[cn] || 0)) / need;
-        if (f < frac) { frac = f; limit = cn; limitKind = 'out'; }
+        if (f < frac) { frac = f; limit = cn; limitKind = 'out'; limitNeed = rate * n.count; }
       }
     }
     frac = Math.min(1, Math.max(0, frac));
@@ -351,14 +379,19 @@ function tick(dtMin) {
     }
     supply += g.power * n.count * frac;
     n.eff = frac;
-    n.why = frac >= 0.99 || !limit ? null
-      : limitKind === 'in'
-        ? (hasInEdge(n.id, limit)
-          ? `연료 부족: ${iname(limit)} — 이전 단계 생산을 늘리세요`
-          : `입력 미연결: ${iname(limit)} — 입력 포트를 연결하세요`)
-        : (hasOutEdge(n.id, limit)
-          ? `출력 정체: ${iname(limit)} — 폐기물 처리를 늘리세요`
-          : `출력 미연결: ${iname(limit)} — 폐기물 처리 라인이 필요합니다`);
+    if (frac >= 0.99 || !limit) {
+      n.why = null;
+    } else if (limitKind === 'in') {
+      const cap = beltCapped(n.id, limit, 'in');
+      n.why = !hasInEdge(n.id, limit) ? `입력 미연결: ${iname(limit)} — 입력 포트를 연결하세요`
+        : cap != null ? beltWhy(limit, cap, limitNeed)
+        : `연료 부족: ${iname(limit)} — 이전 단계 생산을 늘리세요`;
+    } else {
+      const cap = beltCapped(n.id, limit, 'out');
+      n.why = !hasOutEdge(n.id, limit) ? `출력 미연결: ${iname(limit)} — 폐기물 처리 라인이 필요합니다`
+        : cap != null ? beltWhy(limit, cap, limitNeed)
+        : `출력 정체: ${iname(limit)} — 폐기물 처리를 늘리세요`;
+    }
   }
 
   // 2) 수요 · 전력 효율
@@ -430,9 +463,10 @@ function tick(dtMin) {
     n.why = null;
     if (n.eff < 0.99) {
       if (space < want) {
-        n.why = hasOutEdge(n.id, out.item)
-          ? `출력 정체: ${iname(out.item)} — 다음 단계 기계를 늘리거나 출하로 빼세요`
-          : `출력 미연결: ${iname(out.item)} — 출력 포트를 연결하세요`;
+        const cap = beltCapped(n.id, out.item, 'out');
+        n.why = !hasOutEdge(n.id, out.item) ? `출력 미연결: ${iname(out.item)} — 출력 포트를 연결하세요`
+          : cap != null ? beltWhy(out.item, cap, out.rate * n.count)
+          : `출력 정체: ${iname(out.item)} — 다음 단계 기계를 늘리거나 출하로 빼세요`;
       } else if (powerEff < 0.99) {
         n.why = '전력 부족 — 발전기를 늘리세요';
       }
@@ -453,7 +487,7 @@ function tick(dtMin) {
       const need = p.rate * run * dtMin;
       if (need > 0) {
         const f = (n.buf.in[p.item] || 0) / need;
-        if (f < frac) { frac = f; limit = { kind: 'in', item: p.item }; }
+        if (f < frac) { frac = f; limit = { kind: 'in', item: p.item, need: p.rate * n.count }; }
       }
     }
     const cap = BUF_CAP * n.count;
@@ -461,7 +495,7 @@ function tick(dtMin) {
       const make = p.rate * run * dtMin;
       if (make > 0) {
         const f = Math.max(0, cap - (n.buf.out[p.item] || 0)) / make;
-        if (f < frac) { frac = f; limit = { kind: 'out', item: p.item }; }
+        if (f < frac) { frac = f; limit = { kind: 'out', item: p.item, need: p.rate * n.count }; }
       }
     }
     frac = Math.min(1, Math.max(0, frac));
@@ -471,14 +505,15 @@ function tick(dtMin) {
     n.why = null;
     if (n.eff < 0.99) {
       if (limit && frac < powerEff) {
+        const belt = beltCapped(n.id, limit.item, limit.kind);
         if (limit.kind === 'in') {
-          n.why = hasInEdge(n.id, limit.item)
-            ? `재료 부족: ${iname(limit.item)} — 이전 단계 생산을 늘리세요`
-            : `입력 미연결: ${iname(limit.item)} — 입력 포트를 연결하세요`;
+          n.why = !hasInEdge(n.id, limit.item) ? `입력 미연결: ${iname(limit.item)} — 입력 포트를 연결하세요`
+            : belt != null ? beltWhy(limit.item, belt, limit.need)
+            : `재료 부족: ${iname(limit.item)} — 이전 단계 생산을 늘리세요`;
         } else {
-          n.why = hasOutEdge(n.id, limit.item)
-            ? `출력 정체: ${iname(limit.item)} — 다음 단계 기계를 늘리거나 출하로 빼세요`
-            : `출력 미연결: ${iname(limit.item)} — 출력 포트를 연결하세요`;
+          n.why = !hasOutEdge(n.id, limit.item) ? `출력 미연결: ${iname(limit.item)} — 출력 포트를 연결하세요`
+            : belt != null ? beltWhy(limit.item, belt, limit.need)
+            : `출력 정체: ${iname(limit.item)} — 다음 단계 기계를 늘리거나 출하로 빼세요`;
         }
       } else if (powerEff < 0.99) {
         n.why = '전력 부족 — 발전기를 늘리세요';
