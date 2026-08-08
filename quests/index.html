@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>빚과 칼 — 선택형 판타지 로그라이크</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="title" class="screen">
+  <div class="box">
+    <h1>빚과 칼</h1>
+    <p class="sub">영웅담이 아니다. 밥벌이하는 모험가의 서른 날이다.</p>
+    <div class="premise">
+      <p>빚 <b id="t-debt">240</b>금. 기한 <b>30일</b>. 가진 것은 <b>15금</b>과 성한 몸 하나.</p>
+      <p class="dim">능력치·소지품·재산·<b>지난 선택</b>이 앞으로 열릴 선택지를 바꾼다.
+        3일째에 놓아준 도둑이 20일째에 길을 터 주기도 한다.</p>
+    </div>
+    <div id="memories" class="memories"></div>
+    <button id="btn-start" class="primary">떠난다</button>
+    <div id="record" class="record"></div>
+  </div>
+</div>
+
+<div id="game" class="screen" hidden>
+  <header>
+    <div class="hud-left">
+      <span class="day">■ <b id="h-day">1</b>일째</span>
+      <span class="hp" id="h-hp"></span>
+      <span class="gold">금화 <b id="h-gold">0</b></span>
+      <span class="debt">빚 <b id="h-debt">0</b></span>
+    </div>
+    <div class="hud-right" id="h-stats"></div>
+  </header>
+
+  <main>
+    <section class="stage">
+      <div id="scene"></div>
+      <div id="choices" class="choices"></div>
+    </section>
+    <aside class="pack">
+      <h2>소지품</h2>
+      <div id="items" class="items"></div>
+      <h2>지나온 일</h2>
+      <div id="deeds" class="deeds"></div>
+    </aside>
+  </main>
+</div>
+
+<script src="engine.js"></script>
+<script src="events.js"></script>
+<script src="ui.js"></script>
+</body>
+</html>

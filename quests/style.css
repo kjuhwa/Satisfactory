@@ -1,0 +1,129 @@
+:root {
+  --bg: #14120f;
+  --panel: #1c1917;
+  --panel2: #262220;
+  --line: #38312c;
+  --text: #ddd5c8;
+  --dim: #8b8177;
+  --gold: #d8a54a;
+  --blood: #b4574f;
+  --good: #7fa86a;
+  --callback: #9a7fc0;
+}
+* { box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  margin: 0; background: var(--bg); color: var(--text);
+  font: 15px/1.7 "Noto Serif KR", "Batang", Georgia, serif;
+  display: flex; flex-direction: column; overflow: hidden;
+}
+h1, h2, h3 { font-weight: 700; }
+
+.screen { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+
+/* ---------- 제목 ---------- */
+#title { align-items: center; justify-content: center; padding: 24px; overflow-y: auto; }
+#title .box { width: min(620px, 100%); }
+#title h1 { margin: 0; font-size: 44px; color: var(--gold); letter-spacing: .06em; }
+#title .sub { margin: 6px 0 24px; color: var(--dim); }
+.premise { border-left: 2px solid var(--line); padding: 2px 0 2px 16px; margin-bottom: 22px; }
+.premise p { margin: 6px 0; }
+.dim { color: var(--dim); }
+.small { font-size: 13px; }
+
+.memories { margin-bottom: 20px; }
+.memories h2 { font-size: 14px; color: var(--gold); margin: 0 0 8px; }
+.memory { display: flex; align-items: baseline; gap: 8px; padding: 5px 0; cursor: pointer; }
+.memory b { color: var(--text); }
+.memory span { font-size: 13px; }
+
+button {
+  font: inherit; cursor: pointer; color: var(--text);
+  background: var(--panel2); border: 1px solid var(--line); border-radius: 3px;
+  padding: 10px 20px;
+}
+button.primary { background: var(--gold); color: #17130c; border-color: var(--gold); font-weight: 700; }
+button:disabled { cursor: default; }
+.record { margin-top: 16px; color: var(--dim); font-size: 13px; }
+
+/* ---------- 머리 ---------- */
+header {
+  display: flex; align-items: center; gap: 18px; flex-wrap: wrap;
+  padding: 10px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+  font-size: 13.5px;
+}
+.hud-left { display: flex; gap: 18px; align-items: center; flex-wrap: wrap; }
+.hud-right { display: flex; gap: 14px; margin-left: auto; }
+.gold b { color: var(--gold); }
+.debt b { color: var(--blood); }
+.hpbar { display: inline-flex; gap: 2px; margin: 0 6px; vertical-align: middle; }
+.hpbar i { width: 6px; height: 13px; border-radius: 1px; }
+.hpbar i.on { background: var(--blood); }
+.hpbar i.off { background: var(--line); }
+.stat { display: flex; gap: 5px; align-items: baseline; }
+.stat .sname { color: var(--dim); font-size: 12px; }
+
+/* ---------- 본문 ---------- */
+main { flex: 1; min-height: 0; display: flex; gap: 20px; padding: 20px; }
+.stage { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 16px; }
+#scene {
+  flex: 1; min-height: 0; overflow-y: auto;
+  background: var(--panel); border: 1px solid var(--line); border-radius: 4px;
+  padding: 22px 26px;
+}
+.place { color: var(--dim); font-size: 12px; letter-spacing: .1em; margin-bottom: 6px; }
+#scene h2 { margin: 0 0 12px; font-size: 21px; color: var(--gold); }
+#scene h3 { margin: 20px 0 8px; font-size: 14px; color: var(--gold); }
+.day-head { color: var(--text) !important; }
+.body, .flavor { margin: 0 0 10px; white-space: pre-wrap; }
+.flavor { color: var(--dim); }
+.ask { margin: 14px 0 0; color: var(--text); }
+.chosen { margin: 0 0 10px; color: var(--dim); font-style: italic; }
+.bad-text { color: var(--blood); }
+
+.roll { display: inline-block; margin-bottom: 10px; padding: 2px 12px; border-radius: 2px; font-size: 13px; font-weight: 700; }
+.roll.ok { background: rgba(127,168,106,.18); color: var(--good); }
+.roll.fail { background: rgba(180,87,79,.18); color: var(--blood); }
+
+.notes { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.note { font-size: 13px; padding: 2px 10px; border-radius: 2px; background: var(--panel2); }
+.note.good { color: var(--good); }
+.note.bad { color: var(--blood); }
+
+/* ---------- 선택지 ---------- */
+.choices { display: flex; flex-direction: column; gap: 8px; }
+.choice {
+  display: flex; flex-direction: column; gap: 3px; align-items: flex-start;
+  text-align: left; padding: 11px 16px; width: 100%;
+}
+.choice:hover:not(:disabled) { border-color: var(--gold); }
+.ctext { font-size: 15px; }
+.cnote { font-size: 12.5px; color: var(--dim); }
+.cnote.bad { color: #9c6b5f; }
+
+/* 잠긴 선택지를 지우지 않는다. 왜 못 고르는지 보여야 능력치를 올릴 이유가 생긴다. */
+.choice.locked { opacity: .55; border-style: dashed; background: transparent; }
+
+.choice.callback { border-color: var(--callback); }
+.tag {
+  font-size: 11px; letter-spacing: .08em; color: var(--callback);
+  border: 1px solid var(--callback); border-radius: 2px; padding: 0 6px; margin-bottom: 3px;
+}
+
+/* ---------- 소지품 ---------- */
+.pack { width: 250px; flex: none; overflow-y: auto; }
+.pack h2 { font-size: 12px; color: var(--gold); letter-spacing: .1em; margin: 0 0 8px; }
+.pack h2:not(:first-child) { margin-top: 20px; }
+.item { margin-bottom: 8px; font-size: 13px; }
+.item b { display: block; }
+.item span { font-size: 12px; }
+.deeds { display: flex; flex-direction: column; gap: 4px; }
+.deed { font-size: 12.5px; color: var(--dim); padding-left: 9px; border-left: 2px solid var(--line); }
+.deed.new { color: var(--callback); border-color: var(--callback); }
+
+@media (max-width: 820px) {
+  main { flex-direction: column; padding: 12px; }
+  .pack { width: auto; flex: none; }
+  header { font-size: 12.5px; gap: 10px; padding: 8px 12px; }
+  .hud-right { margin-left: 0; }
+}
