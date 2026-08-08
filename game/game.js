@@ -321,6 +321,7 @@ function tick(dtMin) {
   let supply = BASE_POWER;
   for (const n of state.nodes) {
     if (n.type !== 'gen') continue;
+    if (n.paused) { n.eff = 0; n.why = '일시 중지 — 연료를 쓰지 않습니다'; continue; }
     if (n.count <= 0) { n.eff = 0; n.why = '기계 없음 — + 로 구매'; continue; }
     const g = GENS[n.genKey];
     let frac = 1;
@@ -361,8 +362,11 @@ function tick(dtMin) {
   }
 
   // 2) 수요 · 전력 효율
+  // 일시 중지한 노드는 전력을 먹지 않는다. 이게 이 기능의 전부다 —
+  // 전력이 모자라 물 추출기가 느려지고, 물이 안 와서 발전기가 멈추고,
+  // 그래서 전력이 더 모자라지는 고리는 "덜 급한 기계를 꺼서" 밖에 못 끊는다.
   let demand = 0;
-  for (const n of state.nodes) demand += nodeDef(n).power * n.count;
+  for (const n of state.nodes) if (!n.paused) demand += nodeDef(n).power * n.count;
   const powerEff = demand > 0 ? Math.min(1, supply / demand) : 1;
 
   // 3) 연결선으로 아이템 이동 (출력 버퍼 → 입력 버퍼 / 출하 = 재고 / 싱크 = 포인트)
@@ -413,6 +417,7 @@ function tick(dtMin) {
   // 4) 채굴기 노드: 출력 버퍼 공간만큼 생산 (막히면 정지 = 배압)
   for (const n of state.nodes) {
     if (n.type !== 'miner') continue;
+    if (n.paused) { n.eff = 0; n.why = '일시 중지 — 전력을 쓰지 않습니다'; continue; }
     if (n.count <= 0) { n.eff = 0; n.why = '기계 없음 — + 로 구매'; continue; }
     const def = nodeDef(n);
     const out = def.outs[0];
@@ -437,6 +442,7 @@ function tick(dtMin) {
   // 5) 기계 노드: 입력 버퍼 재료 + 출력 공간만큼 가동
   for (const n of state.nodes) {
     if (n.type !== 'machine') continue;
+    if (n.paused) { n.eff = 0; n.why = '일시 중지 — 전력을 쓰지 않습니다'; continue; }
     if (n.count <= 0) { n.eff = 0; n.why = '기계 없음 — + 로 구매'; continue; }
     const def = nodeDef(n);
     const run = n.count * powerEff;
@@ -505,6 +511,7 @@ function autoStep() {
   if (a.buy) {
     for (const n of state.nodes) {
       if (n.type === 'sink' || n.type === 'awesink') continue;
+      if (n.paused) continue;   // 멈춰 둔 노드에 재고를 쓰지 않는다
       if (n.count >= (n.want || 0)) continue;
       if (n.type === 'miner' && depositsLeft(n.resource, n.purity || 'normal') <= 0) continue;
       const cost = nodeDef(n).cost;
@@ -1183,6 +1190,15 @@ function buildFactoryBar() {
     tidyLayout();
   };
   $('btn-fit').onclick = () => fitView();
+  $('btn-rescue').onclick = () => powerRescue();
+  $('btn-resume').onclick = () => {
+    const n = state.nodes.filter(x => x.paused).length;
+    if (!n) { showBanner('멈춰 둔 노드가 없습니다.'); setTimeout(() => { $('banner').hidden = true; }, 2500); return; }
+    for (const x of state.nodes) x.paused = false;
+    save(); update();
+    showBanner(`▶ ${n}개 노드를 다시 돌립니다.`);
+    setTimeout(() => { $('banner').hidden = true; }, 3000);
+  };
   const cBtn = $('btn-compact');
   cBtn.onclick = () => { setCompact(!state.compact); cBtn.classList.toggle('on', !!state.compact); };
   cBtn.classList.toggle('on', !!state.compact);
@@ -1224,6 +1240,17 @@ function buildFactory() {
     }
     const eff = el('span', 'eff');
     head.append(eff);
+    // 일시 중지 토글 — 출하·싱크는 전력을 안 쓰므로 멈출 이유가 없다
+    let pauseBtn = null;
+    if (n.type !== 'sink' && n.type !== 'awesink') {
+      pauseBtn = el('button', 'ghost pause');
+      pauseBtn.addEventListener('click', ev => {
+        ev.stopPropagation();          // 노드 드래그로 새어 나가지 않게
+        n.paused = !n.paused;
+        update(); save();
+      });
+      head.append(pauseBtn);
+    }
     box.append(head);
     const whyLine = el('div', 'fnode-why');
     box.append(whyLine);
@@ -1370,6 +1397,22 @@ function buildFactory() {
           state.edges.some(e => e.to.node === n.id && (lastEdgeFlow[e.id] || 0) > 1e-6));
         return;
       }
+      if (pauseBtn) {
+        pauseBtn.textContent = n.paused ? '▶' : '⏸';
+        pauseBtn.title = n.paused
+          ? '재개 — 다시 전력을 쓰고 생산합니다'
+          : '일시 중지 — 전력을 쓰지 않고 멈춥니다 (기계는 그대로 남습니다)';
+        pauseBtn.classList.toggle('on', !!n.paused);
+      }
+      box.classList.toggle('paused', !!n.paused);
+      if (n.paused) {
+        eff.textContent = '중지';
+        eff.style.color = 'var(--muted)';
+        whyLine.textContent = `⏸ ${fmtN(nodeDef(n).power * n.count)}MW 를 아끼는 중`;
+        whyLine.style.display = '';
+        box.classList.remove('working');
+        return;
+      }
       const pct = Math.round((n.eff || 0) * 100);
       eff.textContent = n.count > 0 ? pct + '%' : '휴면';
       eff.style.color = pct >= 99 ? 'var(--good)' : (n.count > 0 ? 'var(--bad)' : 'var(--muted)');
@@ -1418,8 +1461,11 @@ function buildFactory() {
 
 /* ---------- 배치 정리 도구 ---------- */
 
-/** 연결 관계대로 왼→오 단계별 정렬 (원자재 → 가공 → 출하) */
-function tidyLayout() {
+/**
+ * 연결 관계로 각 노드의 단계를 잰다 (0 = 원자재, 클수록 하류).
+ * 배치 정리와 전력 회복이 같이 쓴다.
+ */
+function nodeDepths() {
   const incoming = {};
   for (const n of state.nodes) incoming[n.id] = [];
   for (const e of state.edges) if (incoming[e.to.node]) incoming[e.to.node].push(e.from.node);
@@ -1435,6 +1481,61 @@ function tidyLayout() {
     }
     if (!changed) break;
   }
+  return { depth, incoming };
+}
+
+/**
+ * 전력이 모자라 스스로는 못 빠져나오는 상태를 푼다.
+ *
+ * 전력이 모자라면 물 추출기가 느려지고 → 물이 안 와서 발전기가 멈추고 →
+ * 전력이 더 모자라진다. 이 고리는 안에서 끊을 수 없다.
+ * 그래서 발전기와 그 연료를 만드는 라인만 남기고, 가장 하류부터 멈춘다.
+ */
+function powerRescue() {
+  const { depth, incoming } = nodeDepths();
+
+  // 발전기와 그 연료 공급 라인은 절대 끄지 않는다 — 끄면 영영 못 돌아온다
+  const keep = new Set();
+  const walkUp = id => {
+    if (keep.has(id)) return;
+    keep.add(id);
+    for (const from of (incoming[id] || [])) walkUp(from);
+  };
+  for (const n of state.nodes) if (n.type === 'gen') walkUp(n.id);
+
+  const supply = lastPower.supply;
+  let demand = 0;
+  for (const n of state.nodes) if (!n.paused) demand += nodeDef(n).power * n.count;
+
+  if (demand <= supply) {
+    showBanner('⚡ 전력은 이미 넉넉합니다. 멈출 것이 없습니다.');
+    setTimeout(() => { $('banner').hidden = true; }, 3000);
+    return;
+  }
+
+  // 하류(가장 가공된 쪽)부터 끈다. 원자재·연료 라인을 남겨야 회복이 시작된다.
+  const victims = state.nodes
+    .filter(n => !n.paused && n.count > 0 && n.type !== 'sink' && n.type !== 'awesink' && !keep.has(n.id))
+    .sort((a, b) => depth[b.id] - depth[a.id] || b.id - a.id);
+
+  let count = 0, freed = 0;
+  for (const n of victims) {
+    if (demand <= supply) break;
+    const p = nodeDef(n).power * n.count;
+    n.paused = true;
+    demand -= p; freed += p; count++;
+  }
+
+  save(); update();
+  showBanner(demand <= supply
+    ? `⚡ ${count}개 노드를 멈춰 ${fmtN(freed)}MW 를 확보했습니다. 물·연료가 차면 ▶ 로 하나씩 되살리세요.`
+    : `⚡ ${count}개를 멈췄지만 아직 ${fmtN(demand - supply)}MW 모자랍니다 — 발전기 라인 자체가 전력을 넘겨 씁니다. 발전기를 더 지으세요.`);
+  setTimeout(() => { $('banner').hidden = true; }, 8000);
+}
+
+/** 연결 관계대로 왼→오 단계별 정렬 (원자재 → 가공 → 출하) */
+function tidyLayout() {
+  const { depth } = nodeDepths();
   // 출하·싱크는 항상 맨 오른쪽 열로
   const maxD = Math.max(0, ...state.nodes.map(n => depth[n.id]));
   for (const n of state.nodes) {

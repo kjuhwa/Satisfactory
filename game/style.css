@@ -84,6 +84,16 @@ h1 { margin: 0; font-size: 20px; color: var(--accent); }
   border-radius: 10px; padding: 14px 16px;
 }
 .panel h2 { margin: 0 0 10px; font-size: 15px; color: var(--accent); }
+
+/* 일시 중지 — 멈춘 노드는 한눈에 구분되어야 어디를 되살릴지 고를 수 있다 */
+.fnode-head .pause {
+  padding: 0 6px; font-size: 12px; line-height: 1.5;
+  background: transparent; border: 1px solid var(--border); color: var(--muted);
+}
+.fnode-head .pause:hover { color: var(--text); border-color: var(--accent); }
+.fnode-head .pause.on { color: var(--accent); border-color: var(--accent); }
+.fnode.paused { opacity: .55; border-style: dashed; }
+.fnode.paused .fnode-why { color: var(--muted); }
 .hint { font-size: 11.5px; color: var(--muted); font-weight: normal; }
 
 button {
