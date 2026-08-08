@@ -339,6 +339,42 @@ function beltCapped(nodeId, item, dir) {
 const beltWhy = (item, cap, need) =>
   `벨트 한계: ${iname(item)} ${fmtN(cap)}/분 → ${fmtN(need)}/분 필요 — 연결선을 클릭해 업그레이드하거나 하나 더 이으세요`;
 
+/**
+ * 버퍼가 말라 가는 입력을 미리 찾아낸다.
+ *
+ * 이 게임에서 제일 잔인한 순간은 "잘 되다가 갑자기" 무너지는 것이다.
+ * 들어오는 양보다 쓰는 양이 많아도 버퍼가 남아 있는 동안은 100% 로 보인다.
+ * 버퍼가 마르는 순간 발전량이 떨어지고, 전력이 모자라면 상류(물 추출기)가 더 느려져
+ * 더 떨어지는 되먹임이 돈다. 한 번 넘어가면 스스로 못 돌아온다.
+ *
+ * 그래서 아직 100% 로 돌고 있을 때 "몇 분 뒤에 멈춘다" 를 미리 말해 준다.
+ * 무너진 뒤에 원인을 알려 주는 것은 늦다.
+ */
+function drainWarn(n) {
+  if (n.paused || n.count <= 0) return null;
+  const def = nodeDef(n);
+  if (!def.ins || !def.ins.length) return null;
+  let worst = null;
+  for (const p of def.ins) {
+    const use = p.rate * n.count * (n.eff ?? 1);          // 지금 쓰고 있는 양 (분당)
+    if (use <= 0) continue;
+    const inflow = state.edges
+      .filter(e => e.to.node === n.id && e.to.item === p.item)
+      .reduce((a, e) => a + (lastEdgeFlow[e.id] || 0), 0);
+    const deficit = use - inflow;
+    if (deficit <= use * 0.02) continue;                  // 오차 수준은 무시
+    const buf = n.buf.in[p.item] || 0;
+    if (buf <= 0) continue;                               // 이미 말랐으면 경고가 아니라 현상이다
+    const mins = buf / deficit;
+    if (mins > 10) continue;                              // 아직 멀었으면 잔소리다
+    if (!worst || mins < worst.mins) worst = { mins, item: p.item, inflow, use, deficit };
+  }
+  if (!worst) return null;
+  return `${iname(worst.item)} 적자 ${fmtN(worst.deficit)}/분 `
+    + `(들어옴 ${fmtN(worst.inflow)} · 씀 ${fmtN(worst.use)}) — `
+    + `약 ${worst.mins < 1 ? '1분 안에' : Math.round(worst.mins) + '분 뒤'} 멈춥니다`;
+}
+
 function tick(dtMin) {
   const prev = { ...state.stock };
   const hasInEdge = (id, item) => state.edges.some(e => e.to.node === id && e.to.item === item);
@@ -520,6 +556,9 @@ function tick(dtMin) {
       }
     }
   }
+
+  // 6) 아직 멀쩡해 보이지만 버퍼가 말라 가는 곳을 미리 알린다
+  for (const n of state.nodes) n.warn = drainWarn(n);
 
   const keys = new Set([...Object.keys(prev), ...Object.keys(state.stock)]);
   lastRates = {};
@@ -1451,10 +1490,13 @@ function buildFactory() {
       const pct = Math.round((n.eff || 0) * 100);
       eff.textContent = n.count > 0 ? pct + '%' : '휴면';
       eff.style.color = pct >= 99 ? 'var(--good)' : (n.count > 0 ? 'var(--bad)' : 'var(--muted)');
+      // 100% 로 돌고 있어도 버퍼가 말라 가면 알려야 한다 — 그게 이 경고의 존재 이유다
       const why = pct < 99 ? (n.why || '') : '';
-      whyLine.textContent = why ? '⚠ ' + why : '';
-      whyLine.style.display = why ? '' : 'none';
-      eff.title = why;
+      const warn = n.warn || '';
+      whyLine.textContent = why ? '⚠ ' + why : (warn ? '⏳ ' + warn : '');
+      whyLine.style.display = (why || warn) ? '' : 'none';
+      whyLine.classList.toggle('soon', !why && !!warn);
+      eff.title = why || warn;
       // 가동 중이면 타입별 애니메이션 (효율이 높을수록 빠르게)
       const working = n.count > 0 && (n.eff || 0) > 0.01;
       box.classList.toggle('working', working);

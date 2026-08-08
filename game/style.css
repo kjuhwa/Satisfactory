@@ -85,6 +85,9 @@ h1 { margin: 0; font-size: 20px; color: var(--accent); }
 }
 .panel h2 { margin: 0 0 10px; font-size: 15px; color: var(--accent); }
 
+/* 아직 100% 로 돌지만 곧 멈출 곳 — 이미 멈춘 것(빨강)과 구분되어야 한다 */
+.fnode-why.soon { color: #e0b34a; }
+
 /* 일시 중지 — 멈춘 노드는 한눈에 구분되어야 어디를 되살릴지 고를 수 있다 */
 .fnode-head .pause {
   padding: 0 6px; font-size: 12px; line-height: 1.5;
