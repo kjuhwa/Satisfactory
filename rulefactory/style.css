@@ -118,6 +118,8 @@ input[type=checkbox] { accent-color: var(--accent); }
 }
 .rescue button { margin-top: 5px; }
 .sec-title { font-weight: 700; margin: 8px 0 4px; }
+/* 라인 종류가 늘어나도 아래의 재고 패널을 화면 밖으로 밀어내지 않도록 여기서 스크롤한다 */
+#factory-body { max-height: 40vh; overflow-y: auto; }
 .frow { display: flex; align-items: center; gap: 6px; padding: 2px 0; }
 .frow .grow { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cnt { font-weight: 700; color: var(--accent); }

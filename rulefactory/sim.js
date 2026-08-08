@@ -321,6 +321,19 @@ function shortfall(cost) {
 }
 const scaleCost = (cost, k) => Object.fromEntries(Object.entries(cost).map(([cn, n]) => [cn, n * k]));
 
+/**
+ * 남는 전력으로 감당되는 기계만 짓는다.
+ *
+ * 이 검사가 없으면 되먹임이 생긴다: 전력이 모자라 라인이 감속 → 재고가 목표에 못 미침
+ * → "재고가 적으면 증설" 규칙이 라인을 더 짓는다 → 전력이 더 모자라 공장 전체가 더 느려진다.
+ * 발전기는 전력을 늘리러 짓는 것이므로 이 검사에서 제외한다.
+ */
+function powerRoom(draw) {
+  const free = lastPower.supply - lastPower.demand;
+  if (free >= draw) return null;
+  return `전력 부족: 여유 ${Math.max(0, Math.round(free))} / 필요 ${Math.round(draw)}MW`;
+}
+
 /** 행동 실행. 성공하면 true, 자원/조건 부족이면 사유 문자열 */
 function doAction(rule) {
   const a = rule.act || {};
@@ -329,6 +342,8 @@ function doAction(rule) {
     case 'buildLine': {
       const r = recipeById[a.recipe];
       if (!r || !recipeUnlocked(r)) return '레시피 잠김';
+      const noPower = powerRoom(recipePower(r) * amount);
+      if (noPower) return noPower;
       const total = scaleCost(buildCost(r.machine), amount);
       const miss = shortfall(total);
       if (miss) return miss;
@@ -342,6 +357,8 @@ function doAction(rule) {
     case 'buildExt': {
       const def = RES[a.res];
       if (!def || !resUnlocked(a.res)) return '자원 잠김';
+      const noPower = powerRoom(def.power * amount);
+      if (noPower) return noPower;
       const total = scaleCost(buildCost(def.build), amount);
       const miss = shortfall(total);
       if (miss) return miss;
