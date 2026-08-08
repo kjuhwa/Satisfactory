@@ -66,7 +66,8 @@
     </section>
     <section class="panel grow">
       <h2>재고</h2>
-      <table id="stock-table"></table>
+      <!-- overflow 는 table 요소에 먹지 않으므로 스크롤 담당 div 로 감싼다 -->
+      <div id="stock-scroll"><table id="stock-table"></table></div>
     </section>
   </aside>
 </div>

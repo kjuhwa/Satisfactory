@@ -50,13 +50,17 @@ h1 { margin: 0; font-size: 19px; color: var(--accent); }
 .col { display: flex; flex-direction: column; gap: 12px; min-height: 0; }
 .col-left { width: 300px; flex: none; overflow-y: auto; }
 .col-mid { flex: 1; min-width: 0; }
-.col-right { width: 320px; flex: none; }
+.col-right { width: 320px; flex: none; overflow-y: auto; }
 .panel {
   background: var(--panel); border: 1px solid var(--border);
   border-radius: 10px; padding: 12px 14px; min-height: 0;
 }
-.panel.grow { flex: 1; display: flex; flex-direction: column; min-height: 0; }
-.panel.grow > #rule-list, .panel.grow > #stock-table { overflow-y: auto; }
+/* 패널은 내용만큼 자리를 차지하고, 넘치면 열이 스크롤한다.
+   기본 flex-shrink 로 패널이 줄어들면 안쪽 내용이 소리 없이 잘려 나간다
+   (납품 목록의 둘째 품목과 "납품하기" 버튼이 통째로 안 보이던 원인). */
+.col > .panel:not(.grow) { flex: none; }
+.panel.grow { flex: 1; display: flex; flex-direction: column; min-height: 220px; }
+.panel.grow > #rule-list, .panel.grow > #stock-scroll { flex: 1; min-height: 0; overflow-y: auto; }
 .panel h2 { margin: 0 0 9px; font-size: 14px; color: var(--accent); }
 .hint { font-size: 11.5px; color: var(--muted); font-weight: normal; }
 .ok { color: var(--good); }
