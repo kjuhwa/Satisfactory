@@ -321,10 +321,21 @@ let lastEdgeFlow = {}; // edgeId -> 이번 틱에 아이템이 흘렀는지 (연
  *
  * 지난 틱의 흐름을 쓴다 — 진단 문구라 한 틱 늦어도 상관없다.
  */
+// 노드·품목별 연결선 색인. 노드마다 state.edges 를 훑으면 노드 수 × 연결선 수가 되어
+// 큰 공장에서 눈에 띄게 느려진다 (측정상 tick 의 40%가 여기였다). 틱마다 한 번만 만든다.
+let edgeIn = {}, edgeOut = {};
+function reindexEdges() {
+  edgeIn = {}; edgeOut = {};
+  for (const e of state.edges) {
+    (edgeIn[e.to.node + '|' + e.to.item] ??= []).push(e);
+    (edgeOut[e.from.node + '|' + e.from.item] ??= []).push(e);
+  }
+}
+const edgesAt = (nodeId, item, dir) =>
+  (dir === 'in' ? edgeIn : edgeOut)[nodeId + '|' + item] || [];
+
 function beltCapped(nodeId, item, dir) {
-  const edges = state.edges.filter(e => dir === 'in'
-    ? (e.to.node === nodeId && e.to.item === item)
-    : (e.from.node === nodeId && e.from.item === item));
+  const edges = edgesAt(nodeId, item, dir);
   if (!edges.length) return null;
   let cap = 0;
   for (const e of edges) {
@@ -358,8 +369,7 @@ function drainWarn(n) {
   for (const p of def.ins) {
     const use = p.rate * n.count * (n.eff ?? 1);          // 지금 쓰고 있는 양 (분당)
     if (use <= 0) continue;
-    const inflow = state.edges
-      .filter(e => e.to.node === n.id && e.to.item === p.item)
+    const inflow = edgesAt(n.id, p.item, 'in')
       .reduce((a, e) => a + (lastEdgeFlow[e.id] || 0), 0);
     const deficit = use - inflow;
     if (deficit <= use * 0.02) continue;                  // 오차 수준은 무시
@@ -377,8 +387,9 @@ function drainWarn(n) {
 
 function tick(dtMin) {
   const prev = { ...state.stock };
-  const hasInEdge = (id, item) => state.edges.some(e => e.to.node === id && e.to.item === item);
-  const hasOutEdge = (id, item) => state.edges.some(e => e.from.node === id && e.from.item === item);
+  reindexEdges();
+  const hasInEdge = (id, item) => edgesAt(id, item, 'in').length > 0;
+  const hasOutEdge = (id, item) => edgesAt(id, item, 'out').length > 0;
 
   // 1) 발전기 노드: 입력 버퍼의 연료만큼 가동 (전력망과 무관하게 동작)
   let supply = BASE_POWER;
@@ -1507,11 +1518,15 @@ function buildFactory() {
   }
 
   // 연결선 (표시용 + 클릭용 넓은 투명 히트 영역)
+  // 흐름 표시를 갱신할 때 쓰려고 만들면서 모아 둔다 —
+  // 갱신마다 querySelectorAll 로 SVG 를 다시 뒤지면 연결선이 많을수록 비싸다.
+  const flowPaths = [];
   for (const e of state.edges) {
     const tier = e.tier || 1;
     const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
     path.classList.add('edge');
     path.dataset.id = e.id;
+    flowPaths.push({ path, id: e.id });
     path.style.strokeWidth = (2 + (tier - 1) * 0.7) + 'px';
     svg.append(path);
     const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -1528,8 +1543,8 @@ function buildFactory() {
   }
   // 아이템이 흐르는 연결선은 컨베이어처럼 점선이 흘러가게
   onUpdate(() => {
-    for (const path of svg.querySelectorAll('path.edge')) {
-      path.classList.toggle('flow', (lastEdgeFlow[+path.dataset.id] || 0) > 1e-6);
+    for (const { path, id } of flowPaths) {
+      path.classList.toggle('flow', (lastEdgeFlow[id] || 0) > 1e-6);
     }
   });
   resizeCanvas();
@@ -2197,8 +2212,18 @@ function buildStats() {
 
 /* --- 재고 --- */
 let stockKeys = '';
+// 재고 목록이 바뀌면 update() 가 UI 전체를 rebuild 한다. 그래서 품목이 0 근처에서
+// 들락날락하면 화면 전체가 계속 다시 그려진다 — 수동 제작으로 재고를 쓰면 실제로 그렇게 된다.
+// (10분 시뮬레이션에서 전선·철판이 149회씩 들락거려 rebuild 가 151회 돌았다.)
+// 한 번이라도 보였던 품목은 0이 되어도 목록에 남긴다. 목록이 단조 증가만 하므로
+// rebuild 횟수가 품목 종류 수로 묶이고, 줄이 사라졌다 나타나지 않아 눈에도 낫다.
+const everSeen = new Set();
 function visibleStock() {
-  const visible = Object.keys(state.stock).filter(cn => stockOf(cn) >= 0.05);
+  const visible = [];
+  for (const cn of Object.keys(state.stock)) {
+    if (stockOf(cn) >= 0.05) everSeen.add(cn);
+    if (everSeen.has(cn)) visible.push(cn);
+  }
   for (const cn of state.raws) if (!visible.includes(cn)) visible.push(cn);
   visible.sort((a, b) => {
     const ra = D.raw.includes(a), rb = D.raw.includes(b);
