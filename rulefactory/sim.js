@@ -89,13 +89,17 @@ let state = null;
 
 // 시작 지원 물자. 이 게임에는 수동 채집·수동 제작이 없으므로
 // 첫 채취기와 첫 라인을 세울 밑천이 없으면 아무것도 시작할 수 없다.
+// 회전자가 들어 있는 이유: 조립기 건설비가 보강 철판·회전자인데 회전자는 조립기에서만 나온다.
+// 밑천에 회전자가 없으면 조립기를 영영 못 지어 보강 철판 재생산이 막히고,
+// 보강 철판이 없으면 제작기도 더 못 지어 초반 5대에서 성장이 멈춘다.
 const STARTER_KIT = {
   Desc_IronPlate_C: 80,
   Desc_IronRod_C: 60,
   Desc_Cement_C: 40,
   Desc_Wire_C: 80,
-  Desc_Cable_C: 40,
-  Desc_IronPlateReinforced_C: 10,
+  Desc_Cable_C: 60,
+  Desc_IronPlateReinforced_C: 24,
+  Desc_Rotor_C: 8,
 };
 
 function freshState() {
@@ -112,7 +116,7 @@ function freshState() {
     credits: 0,
     sellMult: 1,
     bwMax: 16,
-    ruleSlots: 8,
+    ruleSlots: 14,   // 자립하는 최소 순환(채취 3종 + 라인 8종 + 납품)이 13개다
     contract: 0,
     offlineH: 4,
     seq: 2,             // 1번은 지원 채취기가 쓴다
@@ -219,19 +223,30 @@ function tick(dtMin) {
     e.eff = powerEff;
   }
 
-  // 4) 생산 라인: 위에서부터 순서대로 재고를 가져간다 (= 우선순위)
+  // 4) 생산 라인: 모자란 재료는 요구량 비율대로 나눠 갖는다.
+  //
+  // 예전에는 배열 순서대로 재고를 끌어갔다. 그러면 같은 재료를 쓰는 라인 중 앞선 하나가
+  // 재고를 0으로 만들어, 뒤쪽 라인은 조건이 아무리 맞아도 영영 한 개도 생산하지 못했다
+  // (철판 라인이 철 주괴를 전부 먹어 철봉이 0으로 고정 → 철봉이 필요한 납품·제련기·채굴기가 모두 막힘).
+  // 벨트를 나눠 물린 것처럼 비율로 나누면 양쪽 다 느리게라도 돈다.
+  const want = {};
+  for (const l of state.lines) {
+    const r = recipeById[l.recipeId];
+    if (!r || l.count <= 0) continue;
+    for (const [cn, amt] of r.in) want[cn] = (want[cn] || 0) + perMin(r, amt) * l.count * powerEff * dtMin;
+  }
+  const share = {};
+  for (const cn of Object.keys(want)) share[cn] = want[cn] > 0 ? Math.min(1, stockOf(cn) / want[cn]) : 1;
+
   for (const l of state.lines) {
     const r = recipeById[l.recipeId];
     if (!r || l.count <= 0) { l.eff = 0; l.why = '기계 없음'; continue; }
     const run = l.count * powerEff;
     let frac = 1;
     let short = null;
-    for (const [cn, amt] of r.in) {
-      const need = perMin(r, amt) * run * dtMin;
-      if (need > 0) {
-        const f = stockOf(cn) / need;
-        if (f < frac) { frac = f; short = cn; }
-      }
+    for (const [cn] of r.in) {
+      const f = share[cn] ?? 1;
+      if (f < frac) { frac = f; short = cn; }
     }
     frac = Math.min(1, Math.max(0, frac));
     for (const [cn, amt] of r.in) addStock(cn, -perMin(r, amt) * run * dtMin * frac);
@@ -403,16 +418,28 @@ let lastBw = { used: 0, max: 0 };
 
 function runRules(dtMin) {
   const nowSec = (state.simSec = (state.simSec || 0) + dtMin * 60);
+  const n = state.rules.length;
   let used = 0;
   const budget = state.bwMax;
-  for (const rule of state.rules) {
+
+  // 한 틱 안에서는 여전히 위에서부터 평가한다 (= 순서가 곧 우선순위).
+  // 다만 지난 틱에 대역폭이 모자라 밀린 규칙이 있으면 그 규칙부터 시작해 한 바퀴 돈다.
+  // 이렇게 하지 않으면 "위치 + 발동 비용 > 대역폭" 인 아래쪽 규칙은
+  // 조건이 아무리 만족돼도 영영 발동하지 못한다 (납품 규칙이 대표적).
+  const start = n ? ((state.bwStart || 0) % n + n) % n : 0;
+  let nextStart = -1;
+  const starve = idx => { if (nextStart < 0) nextStart = idx; };
+
+  for (let i = 0; i < n; i++) {
+    const idx = (start + i) % n;
+    const rule = state.rules[idx];
     if (!rule.on) { rule.status = 'off'; continue; }
-    if (used + RULE_COST_EVAL > budget) { rule.status = 'bw'; continue; }  // 대역폭 소진 → 평가조차 못 함
+    if (used + RULE_COST_EVAL > budget) { rule.status = 'bw'; starve(idx); continue; }  // 대역폭 소진 → 평가조차 못 함
     used += RULE_COST_EVAL;
     const cd = rule.cooldown ?? DEFAULT_COOLDOWN;
     if (nowSec - (rule.lastFired || 0) < cd) { rule.status = 'cool'; continue; }
     if (!condMet(rule, nowSec)) { rule.status = 'wait'; continue; }
-    if (used + RULE_COST_FIRE > budget) { rule.status = 'bw'; continue; }
+    if (used + RULE_COST_FIRE > budget) { rule.status = 'bw'; starve(idx); continue; }
     const r = doAction(rule);
     if (r === true) {
       used += RULE_COST_FIRE;
@@ -425,6 +452,7 @@ function runRules(dtMin) {
       rule.why = r;
     }
   }
+  state.bwStart = nextStart >= 0 ? nextStart : 0;   // 밀린 규칙이 없으면 다시 1번부터
   lastBw = { used, max: budget };
 }
 

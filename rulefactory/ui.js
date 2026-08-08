@@ -175,7 +175,7 @@ function buildRules() {
     save(); rebuild();
   });
   const preset = el('button', 'ghost', '예시 규칙 넣기');
-  preset.title = '기본적인 자동 확장 규칙 4개를 채워 넣습니다';
+  preset.title = '스스로 굴러가는 최소 순환(채취·가공·납품) 규칙을 채워 넣습니다';
   preset.addEventListener('click', () => { addPresets(); });
   foot.append(add, preset);
   const slots = el('span', 'hint');
@@ -206,25 +206,45 @@ function moveRule(idx, dir) {
 
 /** 처음 시작하는 사람을 위한 기본 규칙 세트 */
 function addPresets() {
-  // 스스로 돌아가는 최소 순환. 순서가 곧 우선순위이므로,
-  // 채굴기 재생산에 꼭 필요한 철판·철봉을 콘크리트보다 앞에 둔다.
+  // 스스로 돌아가는 최소 순환.
+  //
+  // 조건은 전부 "이 품목 재고가 목표보다 적으면 그 라인을 늘려라" 형태다.
+  // 예전처럼 "상위 재료가 남으면 늘려라" 로 쓰면, 그 재료를 먼저 먹는 위쪽 라인 때문에
+  // 아래쪽 라인 조건이 영영 성립하지 않는다 (철판 라인이 철 주괴를 다 먹어 철봉 라인이 안 생겼다).
+  //
+  // 그리고 건설비 순환이 닫혀 있어야 한다:
+  //   제작기 = 보강 철판 + 케이블 · 제련기 = 철봉 + 전선 · 채굴기 = 철판 + 철봉 + 콘크리트
+  // 전선·케이블·나사·보강 철판 라인이 빠지면 밑천을 다 쓴 뒤 기계를 더 못 지어 공장이 멈춘다.
   const presets = [
     { cond: { type: 'stock', item: 'Desc_OreIron_C', op: '<', value: 120 },
       act: { type: 'buildExt', res: 'Desc_OreIron_C', amount: 1 }, cooldown: 10 },
-    { cond: { type: 'stock', item: 'Desc_OreIron_C', op: '>', value: 60 },
+    { cond: { type: 'stock', item: 'Desc_IronIngot_C', op: '<', value: 400 },
       act: { type: 'buildLine', recipe: 'Recipe_IngotIron_C', amount: 1 }, cooldown: 10 },
-    { cond: { type: 'stock', item: 'Desc_IronIngot_C', op: '>', value: 40 },
-      act: { type: 'buildLine', recipe: 'Recipe_IronPlate_C', amount: 1 }, cooldown: 10 },
-    { cond: { type: 'stock', item: 'Desc_IronIngot_C', op: '>', value: 80 },
-      act: { type: 'buildLine', recipe: 'Recipe_IronRod_C', amount: 1 }, cooldown: 10 },
-    { cond: { type: 'stock', item: 'Desc_Stone_C', op: '<', value: 120 },
-      act: { type: 'buildExt', res: 'Desc_Stone_C', amount: 1 }, cooldown: 12 },
-    { cond: { type: 'stock', item: 'Desc_Stone_C', op: '>', value: 60 },
-      act: { type: 'buildLine', recipe: 'Recipe_Concrete_C', amount: 1 }, cooldown: 12 },
+    // 라인은 만들어진 순서대로 재고를 가져간다 = 규칙 순서가 곧 소비 우선순위.
+    // 철판은 채굴기·납품 양쪽에 들어가므로 철봉·나사보다 위에 둔다.
+    { cond: { type: 'stock', item: 'Desc_IronPlate_C', op: '<', value: 400 },
+      act: { type: 'buildLine', recipe: 'Recipe_IronPlate_C', amount: 1 }, cooldown: 12 },
+    { cond: { type: 'stock', item: 'Desc_IronRod_C', op: '<', value: 300 },
+      act: { type: 'buildLine', recipe: 'Recipe_IronRod_C', amount: 1 }, cooldown: 12 },
+    { cond: { type: 'stock', item: 'Desc_IronScrew_C', op: '<', value: 200 },
+      act: { type: 'buildLine', recipe: 'Recipe_Screw_C', amount: 1 }, cooldown: 14 },
     { cond: { type: 'stock', item: 'Desc_OreCopper_C', op: '<', value: 120 },
-      act: { type: 'buildExt', res: 'Desc_OreCopper_C', amount: 1 }, cooldown: 14 },
-    { cond: { type: 'stock', item: 'Desc_OreCopper_C', op: '>', value: 60 },
-      act: { type: 'buildLine', recipe: 'Recipe_IngotCopper_C', amount: 1 }, cooldown: 14 },
+      act: { type: 'buildExt', res: 'Desc_OreCopper_C', amount: 1 }, cooldown: 12 },
+    { cond: { type: 'stock', item: 'Desc_CopperIngot_C', op: '<', value: 100 },
+      act: { type: 'buildLine', recipe: 'Recipe_IngotCopper_C', amount: 1 }, cooldown: 12 },
+    { cond: { type: 'stock', item: 'Desc_Wire_C', op: '<', value: 250 },
+      act: { type: 'buildLine', recipe: 'Recipe_Wire_C', amount: 1 }, cooldown: 14 },
+    { cond: { type: 'stock', item: 'Desc_Cable_C', op: '<', value: 120 },
+      act: { type: 'buildLine', recipe: 'Recipe_Cable_C', amount: 1 }, cooldown: 14 },
+    { cond: { type: 'stock', item: 'Desc_IronPlateReinforced_C', op: '<', value: 60 },
+      act: { type: 'buildLine', recipe: 'Recipe_IronPlateReinforced_C', amount: 1 }, cooldown: 16 },
+    { cond: { type: 'stock', item: 'Desc_Stone_C', op: '<', value: 120 },
+      act: { type: 'buildExt', res: 'Desc_Stone_C', amount: 1 }, cooldown: 14 },
+    { cond: { type: 'stock', item: 'Desc_Cement_C', op: '<', value: 150 },
+      act: { type: 'buildLine', recipe: 'Recipe_Concrete_C', amount: 1 }, cooldown: 14 },
+    // 목표. 재료가 모이면 알아서 납품하고 다음 계약으로 넘어간다.
+    { cond: { type: 'every', value: 30 },
+      act: { type: 'deliver' }, cooldown: 30 },
   ];
   let added = 0;
   for (const p of presets) {
