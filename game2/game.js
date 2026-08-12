@@ -229,20 +229,21 @@ function facDef(f) {
   return { label: '출하 시설', iconCn: null, ins: [], outs: [], power: 0, cost: {} }; // sink
 }
 
-/** 단지의 아이템별 총 생산/소비 (100% 기준) */
-function cxFlows(cx) {
+/** 단지의 아이템별 총 생산/소비 (100% 기준). virtual=true 면 미건설(0대)도 1대로 가정 */
+function cxFlows(cx, virtual) {
   const prod = {}, cons = {};
   for (const f of cx.members) {
     const def = facDef(f);
-    for (const p of def.outs) prod[p.item] = (prod[p.item] || 0) + p.rate * f.count;
-    for (const p of def.ins) cons[p.item] = (cons[p.item] || 0) + p.rate * f.count;
+    const run = virtual ? Math.max(f.count, 1) : f.count;
+    for (const p of def.outs) prod[p.item] = (prod[p.item] || 0) + p.rate * run;
+    for (const p of def.ins) cons[p.item] = (cons[p.item] || 0) + p.rate * run;
   }
   return { prod, cons };
 }
 
 /** 단지 외부 포트: 부족 입력 / 잉여 출력 */
-function cxPorts(cx) {
-  const { prod, cons } = cxFlows(cx);
+function cxPorts(cx, virtual) {
+  const { prod, cons } = cxFlows(cx, virtual);
   const items = new Set([...Object.keys(prod), ...Object.keys(cons)]);
   const ins = [], outs = [];
   for (const cn of items) {
@@ -276,7 +277,9 @@ const hasAwesink = cx => cx.members.some(f => f.type === 'awesink');
 /** 단지 정체성 (이름·아이콘) */
 function cxIdentity(cx) {
   const gen = cx.members.find(f => f.type === 'gen');
-  if (gen) {
+  const hasMachine = cx.members.some(f => f.type === 'machine');
+  if (gen && !hasMachine) {
+    // 순수 발전 단지 (생산 기계 없음)
     const g = GENS[gen.genKey];
     return { name: '⚡ ' + D.xnames[g.build].replace('발전소', '').replace('발전기', '').trim() + ' 발전 단지', icon: g.build, cls: 'power-plant' };
   }
@@ -284,12 +287,16 @@ function cxIdentity(cx) {
     const def = facDef(cx.members[0]);
     return { name: def.label, icon: def.iconCn, cls: '' };
   }
-  const { outs } = cxPorts(cx);
+  const { outs } = cxPorts(cx, true); // 미건설 시설도 1대로 가정해 정체성 부여
   if (outs.length > 0) {
-    // 가장 가공도 높은 산출물로 명명 (광석보다 완제품이 단지의 정체성)
+    // 가장 가공도 높은 산출물로 명명 — 자체 발전 포함이면 ⚡ 표시
     const main = outs.sort((a, b) =>
       (itemDepth(b.item) - itemDepth(a.item)) || (b.rate - a.rate))[0].item;
-    return { name: iname(main) + ' 단지', icon: main, cls: '' };
+    return { name: (gen ? '⚡ ' : '') + iname(main) + ' 단지', icon: main, cls: gen ? 'power-plant' : '' };
+  }
+  if (gen) {
+    const g = GENS[gen.genKey];
+    return { name: '⚡ ' + D.xnames[g.build].replace('발전소', '').replace('발전기', '').trim() + ' 발전 단지', icon: g.build, cls: 'power-plant' };
   }
   if (hasSink(cx) || hasAwesink(cx)) {
     return { name: hasAwesink(cx) ? 'AWESOME 싱크장' : '출하장', icon: hasAwesink(cx) ? SHARD : null, cls: '' };
@@ -507,63 +514,71 @@ function tick(dtMin) {
     }
   }
 
-  // 4) 시설 가동 (채굴 → 얕은 레시피 → 깊은 레시피 순)
+  // 4) 시설 가동 — 채굴 후, 같은 재료를 원하는 기계끼리는 요구량 비율대로 공정 배분
   for (const cx of state.cx) {
     const cap = poolCap(cx);
-    const order = [...cx.members].sort((a, b) => {
-      const da = a.type === 'miner' ? -1 : a.type === 'machine' ? itemDepth(recipeById[a.recipeId].out[0][0]) : 99;
-      const db = b.type === 'miner' ? -1 : b.type === 'machine' ? itemDepth(recipeById[b.recipeId].out[0][0]) : 99;
-      return da - db;
-    });
-    for (const f of order) {
+    for (const f of cx.members) {
       if (f.type === 'miner' || f.type === 'machine') f.lack = f.jam = null;
-      if (f.type === 'miner') {
-        if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
-        const def = facDef(f);
-        const out = def.outs[0];
-        const want = out.rate * f.count * powerEff * dtMin;
-        const space = Math.max(0, cap - (cx.pool[out.item] || 0));
-        const make = Math.min(want, space);
-        cx.pool[out.item] = (cx.pool[out.item] || 0) + make;
-        f.eff = want > 0 ? powerEff * (make / want) : 0;
-        f.why = f.eff >= 0.99 ? null
-          : space < want ? `저장고 가득: ${iname(out.item)} — 소비·수출·출하가 필요합니다`
-          : powerEff < 0.99 ? '전력 부족' : null;
-        f.lack = null;
-        f.jam = space < want ? out.item : null;
-      } else if (f.type === 'machine') {
-        if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
-        const def = facDef(f);
-        const run = f.count * powerEff;
-        if (run <= 0) { f.eff = 0; f.why = '전력 부족'; continue; }
-        let frac = 1, limit = null, limitKind = null;
-        for (const p of def.ins) {
-          const need = p.rate * run * dtMin;
-          if (need > 0) {
-            const v = (cx.pool[p.item] || 0) / need;
-            if (v < frac) { frac = v; limit = p.item; limitKind = 'in'; }
-          }
+    }
+    // 4a) 채굴기 먼저 (이번 틱 생산분을 기계가 쓸 수 있게)
+    for (const f of cx.members) {
+      if (f.type !== 'miner') continue;
+      if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
+      const def = facDef(f);
+      const out = def.outs[0];
+      const want = out.rate * f.count * powerEff * dtMin;
+      const space = Math.max(0, cap - (cx.pool[out.item] || 0));
+      const make = Math.min(want, space);
+      cx.pool[out.item] = (cx.pool[out.item] || 0) + make;
+      f.eff = want > 0 ? powerEff * (make / want) : 0;
+      f.why = f.eff >= 0.99 ? null
+        : space < want ? `저장고 가득: ${iname(out.item)} — 소비·수출·출하가 필요합니다`
+        : powerEff < 0.99 ? '전력 부족' : null;
+      f.lack = null;
+      f.jam = space < want ? out.item : null;
+    }
+    // 4b) 기계: 스냅샷 기준으로 재료를 비율 배분 (한 기계가 독식해 다른 기계가 굶는 것 방지)
+    const snap = { ...cx.pool };
+    const wants = {};
+    const machines = [];
+    for (const f of cx.members) {
+      if (f.type !== 'machine') continue;
+      if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
+      const def = facDef(f);
+      const run = f.count * powerEff;
+      if (run <= 0) { f.eff = 0; f.why = '전력 부족'; continue; }
+      machines.push({ f, def, run });
+      for (const p of def.ins) wants[p.item] = (wants[p.item] || 0) + p.rate * run * dtMin;
+    }
+    for (const { f, def, run } of machines) {
+      let frac = 1, limit = null, limitKind = null;
+      for (const p of def.ins) {
+        const need = p.rate * run * dtMin;
+        if (need > 0) {
+          // 내 몫 = 저장고 스냅샷 × (내 요구량 / 전체 요구량) — 비율이 곧 가동률 상한
+          const share = Math.min(1, (snap[p.item] || 0) / wants[p.item]);
+          if (share < frac) { frac = share; limit = p.item; limitKind = 'in'; }
         }
-        for (const p of def.outs) {
-          const make = p.rate * run * dtMin;
-          if (make > 0) {
-            const v = Math.max(0, cap - (cx.pool[p.item] || 0)) / make;
-            if (v < frac) { frac = v; limit = p.item; limitKind = 'out'; }
-          }
-        }
-        frac = Math.min(1, Math.max(0, frac));
-        for (const p of def.ins) cx.pool[p.item] = Math.max(0, (cx.pool[p.item] || 0) - p.rate * run * dtMin * frac);
-        for (const p of def.outs) cx.pool[p.item] = (cx.pool[p.item] || 0) + p.rate * run * dtMin * frac;
-        f.eff = powerEff * frac;
-        f.why = f.eff >= 0.99 ? null
-          : limit && frac < powerEff
-            ? (limitKind === 'in' ? `재료 부족: ${iname(limit)}`
-                : `저장고 가득: ${iname(limit)} — 출하 시설을 합치거나 소비처를 늘리세요`)
-            : powerEff < 0.99 ? '전력 부족' : null;
-        const bound = limit && frac < 0.999;
-        f.lack = bound && limitKind === 'in' ? limit : null;
-        f.jam = bound && limitKind === 'out' ? limit : null;
       }
+      for (const p of def.outs) {
+        const make = p.rate * run * dtMin;
+        if (make > 0) {
+          const v = Math.max(0, cap - (cx.pool[p.item] || 0)) / make;
+          if (v < frac) { frac = v; limit = p.item; limitKind = 'out'; }
+        }
+      }
+      frac = Math.min(1, Math.max(0, frac));
+      for (const p of def.ins) cx.pool[p.item] = Math.max(0, (cx.pool[p.item] || 0) - p.rate * run * dtMin * frac);
+      for (const p of def.outs) cx.pool[p.item] = (cx.pool[p.item] || 0) + p.rate * run * dtMin * frac;
+      f.eff = powerEff * frac;
+      f.why = f.eff >= 0.99 ? null
+        : limit && frac < powerEff
+          ? (limitKind === 'in' ? `재료 부족: ${iname(limit)}`
+              : `저장고 가득: ${iname(limit)} — 출하 시설을 합치거나 소비처를 늘리세요`)
+          : powerEff < 0.99 ? '전력 부족' : null;
+      const bound = limit && frac < 0.999;
+      f.lack = bound && limitKind === 'in' ? limit : null;
+      f.jam = bound && limitKind === 'out' ? limit : null;
     }
     // 5) 출하/싱크: 모든 잉여 반출 — 내부 소비 품목은 소비 1분치만 남기고 초과분을 내보냄
     const consRate = {};
@@ -959,7 +974,7 @@ function planPick(item) {
   return (producersOf[item] || []).find(r =>
     state.machines.includes(r.machine) && (!r.alt || state.altUnlocked.includes(r.id))) || null;
 }
-function computePlan(target, rate) {
+function computePlanMulti(demands) {
   const recipes = new Map();
   const raws = {};
   const external = {};
@@ -976,10 +991,39 @@ function computePlan(target, rate) {
     next.add(item);
     for (const [ing, amt] of r.in) expand(ing, m * perMin(r, amt), next);
   };
-  expand(target, rate, new Set());
+  for (const [item, rate] of demands) expand(item, rate, new Set());
   return { recipes: [...recipes.values()], raws, external };
 }
+const computePlan = (target, rate) => computePlanMulti([[target, rate]]);
 const bestMinerTier = () => [3, 2, 1].find(minerTierUnlocked);
+
+/** 계획의 전력 수요 (기계 + 채굴기, 100% 클럭) */
+function planPower(plan) {
+  let p = 0;
+  for (const { recipe, machines } of plan.recipes) p += linePower(recipe) * machines;
+  const tier = bestMinerTier();
+  for (const [cn, r8] of Object.entries(plan.raws)) {
+    const def = EXT[cn] || MINERS[tier];
+    p += def.power * (r8 / def.rate);
+  }
+  return p;
+}
+
+/** 목표 + 자체 발전(연료 체인 포함, 반복 수렴) 통합 계획 */
+function computeFullPlan(target, rate, genKey) {
+  let plan = computePlan(target, rate);
+  if (!genKey) return { ...plan, gens: 0, genKey: null, power: planPower(plan) };
+  const g = GENS[genKey];
+  let gens = 0;
+  for (let i = 0; i < 4; i++) {
+    gens = Math.max(1, Math.ceil(planPower(plan) / g.power - 1e-9));
+    plan = computePlanMulti([
+      [target, rate],
+      ...g.burns.map(([cn, r]) => [cn, r * gens]),
+    ]);
+  }
+  return { ...plan, gens, genKey, power: planPower(plan) };
+}
 
 function autoBuildPlan(plan) {
   const members = [];
@@ -994,6 +1038,9 @@ function autoBuildPlan(plan) {
   }
   for (const e of plan.recipes) {
     members.push({ id: state.seq++, type: 'machine', recipeId: e.recipe.id, count: 0 });
+  }
+  if (plan.genKey && plan.gens > 0) {
+    members.push({ id: state.seq++, type: 'gen', genKey: plan.genKey, count: 0 });
   }
   members.push({ id: state.seq++, type: 'sink', count: 1 }); // 잉여 자동 출하
   const pos = spawnXY();
@@ -1016,6 +1063,18 @@ function openPlanner() {
   const rateInput = el('input');
   rateInput.type = 'number'; rateInput.min = '0.1'; rateInput.step = 'any'; rateInput.value = '10';
   rateRow.append(el('span', null, '목표 생산량'), rateInput, el('span', 'hint', '/분'));
+  // 자체 발전 선택 (해금된 발전기 + 연료 체인까지 계획에 포함)
+  const genSel = el('select');
+  const noGen = el('option', null, '자체 발전 없음 (외부 전력)');
+  noGen.value = '';
+  genSel.append(noGen);
+  for (const key of state.gensUnlocked) {
+    const opt = el('option', null, `${D.xnames[GENS[key].build]} 포함 (+${GENS[key].power}MW/대)`);
+    opt.value = key;
+    genSel.append(opt);
+  }
+  if (state.gensUnlocked.includes('coal')) genSel.value = 'coal';
+  rateRow.append(el('span', null, ' · 전력'), genSel);
   const result = el('div', 'plan-result');
   const btnRow = el('div', 'btn-wrap');
   const buildBtn = el('button', null, '단지로 자동 생성');
@@ -1054,17 +1113,24 @@ function openPlanner() {
     buildBtn.disabled = true;
     if (!selItem) { result.append(el('div', 'hint', '목표 아이템을 선택하세요.')); return; }
     const rate = Math.max(0.1, parseFloat(rateInput.value) || 10);
-    const plan = computePlan(selItem, rate);
+    const plan = computeFullPlan(selItem, rate, genSel.value || null);
     if (plan.recipes.length === 0) {
       result.append(el('div', 'hint', '현재 해금된 기계로는 이 아이템을 생산할 수 없습니다.'));
       return;
     }
     lastPlan = { ...plan, target: selItem, rate };
     buildBtn.disabled = false;
-    let power = 0;
     const t = el('table', 'plan-table');
+    if (plan.genKey && plan.gens > 0) {
+      const g = GENS[plan.genKey];
+      const tr = el('tr');
+      const nameTd = el('td');
+      nameTd.append(iconEl(g.build, 's'), ` ⚡ ${D.xnames[g.build]} `,
+        el('span', 'hint', `연료 체인 포함 · 발전 +${(g.power * plan.gens).toLocaleString()}MW`));
+      tr.append(nameTd, el('td', 'num', `×${plan.gens}`));
+      t.append(tr);
+    }
     for (const { recipe, machines } of plan.recipes.sort((a, b) => b.machines - a.machines)) {
-      power += linePower(recipe) * machines;
       const tr = el('tr');
       const nameTd = el('td');
       nameTd.append(iconEl(recipe.out[0][0], 's'), ` ${recipe.ko} `, el('span', 'hint', `[${mname(recipe.machine)}]`));
@@ -1075,7 +1141,6 @@ function openPlanner() {
     for (const [cn, r8] of Object.entries(plan.raws).sort((a, b) => b[1] - a[1])) {
       const def = EXT[cn] || MINERS[tier];
       const cnt = Math.ceil(r8 / def.rate - 1e-9);
-      power += def.power * (r8 / def.rate);
       const tr = el('tr', 'plan-raw');
       const nameTd = el('td');
       nameTd.append(iconEl(cn, 's'),
@@ -1092,8 +1157,11 @@ function openPlanner() {
       t.append(tr);
     }
     result.append(t);
+    const genMW = plan.genKey ? GENS[plan.genKey].power * plan.gens : 0;
     result.append(el('div', 'hint',
-      `예상 전력 ~${fmtN(power)} MW (100% 클럭) · 내부 물류 자동 + 잉여는 출하 시설이 재고로 반출`));
+      `전력 수요 ~${fmtN(plan.power)} MW (100% 클럭)`
+      + (genMW ? ` · 자체 발전 +${genMW.toLocaleString()} MW — 전력까지 자급하는 단지` : ' · 외부 전력 필요')
+      + ' · 내부 물류 자동'));
   };
 
   buildBtn.addEventListener('click', () => {
@@ -1103,6 +1171,7 @@ function openPlanner() {
   });
   search.oninput = renderList;
   rateInput.oninput = renderPlan;
+  genSel.onchange = renderPlan;
   renderList();
   renderPlan();
 }
