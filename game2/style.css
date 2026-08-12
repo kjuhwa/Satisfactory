@@ -1,0 +1,93 @@
+/* game2 전용 — 기본 스타일은 ../game/style.css 를 상속 */
+
+/* v1의 #node-layer { pointer-events:none } 상속 복구 — .cx 카드는 이벤트를 받아야 함 */
+#node-layer .cx { pointer-events: auto; }
+
+/* 단지(복합 시설) 카드 */
+.cx {
+  position: absolute;
+  min-width: 190px; max-width: 260px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, .45);
+  user-select: none;
+  font-size: 12px;
+  cursor: grab;
+}
+.cx:active { cursor: grabbing; }
+.cx.drop-target { border-color: var(--accent); box-shadow: 0 0 18px rgba(250, 149, 73, .5); }
+.cx.dragging { opacity: .75; z-index: 30; }
+.cx.focused { border-color: var(--accent-dim); box-shadow: 0 0 14px rgba(250, 149, 73, .3); }
+
+.cx-head {
+  display: flex; align-items: center; gap: 6px;
+  padding: 6px 9px;
+  background: var(--panel2);
+  border-radius: 10px 10px 0 0;
+  border-bottom: 1px solid var(--border);
+  font-weight: 700;
+}
+.cx-head .eff { margin-left: auto; font-size: 11px; font-weight: 600; }
+.cx-why {
+  padding: 3px 9px;
+  font-size: 10.5px; color: var(--bad);
+  border-bottom: 1px dashed var(--border);
+}
+.cx-sub {
+  padding: 2px 9px 4px;
+  font-size: 10.5px; color: var(--muted);
+  display: flex; gap: 8px; flex-wrap: wrap;
+}
+
+/* 중간 줌: 내부 시설 아이콘 스트립 */
+.cx-strip {
+  display: none;
+  padding: 4px 9px 6px;
+  gap: 3px; flex-wrap: wrap;
+  border-bottom: 1px dashed var(--border);
+}
+.cx-strip .icon { opacity: .9; }
+.zoom-mid .cx-strip, .zoom-near .cx-strip { display: flex; }
+.cx.focused .cx-strip { display: flex; }
+
+/* 근접 줌·고정: 내부 시설 목록 (조작 가능) */
+.cx-members { display: none; border-bottom: 1px dashed var(--border); }
+.zoom-near .cx-members, .cx.focused .cx-members { display: block; }
+.zoom-near .cx-strip, .cx.focused .cx-strip { display: none; }
+.mem {
+  display: flex; align-items: center; gap: 5px;
+  padding: 3px 9px;
+  border-bottom: 1px solid rgba(58, 51, 42, .4);
+  font-size: 11.5px;
+}
+.mem:last-child { border-bottom: none; }
+.mem .m-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.mem .m-eff { font-size: 10px; min-width: 30px; text-align: right; }
+.mem button { padding: 0 6px; font-size: 11px; }
+.mem .cnt { font-weight: 700; color: var(--accent); min-width: 18px; text-align: center; }
+
+/* 포트 (단지 외부 입출력) */
+.cx-ports { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; }
+.cx-ports .ports { max-width: 50%; }
+.cx-ports .port .pool { color: var(--muted); font-size: 10px; min-width: 22px; }
+
+.cx-foot {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 9px 6px;
+  font-size: 10.5px; color: var(--muted);
+}
+.cx-foot .del { margin-left: auto; }
+
+/* 정체성 뱃지 */
+.cx-badge {
+  font-size: 9.5px; padding: 0 5px; border-radius: 7px;
+  border: 1px solid var(--accent-dim); color: var(--accent);
+  font-weight: 600;
+}
+.cx.power-plant .cx-head { background: linear-gradient(180deg, #2d2a1a, var(--panel2)); }
+
+/* 가동 애니메이션 (단지 전체 펄스) */
+.cx.working { animation: workpulse 2.4s ease-in-out infinite; }
+.cx.working.power-plant { animation: genglow 1.6s ease-in-out infinite; }
+.cx.working .cx-head .icon { animation: stamp var(--spd, .9s) ease-in-out infinite; }

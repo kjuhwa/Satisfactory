@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Satisfactory 공장 단지</title>
+<link rel="stylesheet" href="../game/style.css">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="head-left">
+    <h1>🏙 Satisfactory 공장 단지</h1>
+    <p class="sub">시설을 겹쳐 단지로 합치는 실험판 — 내부 물류는 자동, 줌으로 들여다보기</p>
+  </div>
+  <div class="head-right">
+    <div class="power-box">
+      <div class="power-label">전력 <span id="power-text">0 / 20 MW</span></div>
+      <div class="power-bar"><div id="power-fill"></div></div>
+    </div>
+    <button id="btn-mute" class="ghost" title="효과음 켜기/끄기">🔊</button>
+    <button id="btn-save" class="ghost">저장</button>
+    <button id="btn-export" class="ghost">내보내기</button>
+    <button id="btn-import" class="ghost">가져오기</button>
+    <input id="import-file" type="file" accept=".json,application/json" hidden>
+    <button id="btn-reset" class="ghost danger">초기화</button>
+  </div>
+</header>
+
+<div id="banner" hidden></div>
+
+<div id="layout">
+<aside id="sidebar">
+    <div class="panel" id="tut-panel" hidden>
+      <h2>시작 가이드 <button id="tut-hide" class="mini ghost" style="float:right">숨기기</button></h2>
+      <div id="tut-body"></div>
+    </div>
+    <div class="panel" id="milestone-panel">
+      <h2>마일스톤</h2>
+      <div id="milestone-body"></div>
+    </div>
+    <div class="panel">
+      <h2>수동 채집</h2>
+      <div id="gather-buttons" class="btn-wrap"></div>
+    </div>
+    <div class="panel">
+      <h2>수동 제작 <span class="hint">기계 없이 한 사이클씩 제작</span></h2>
+      <input id="hand-search" placeholder="레시피 검색 (한글/영문)" autocomplete="off">
+      <div id="hand-list"></div>
+      <div id="hand-req"></div>
+      <div class="btn-wrap">
+        <button id="hand-craft-1">제작 ×1</button>
+        <button id="hand-craft-10">제작 ×10</button>
+      </div>
+      <div id="hand-info" class="hint"></div>
+    </div>
+    <div class="panel" id="shop-panel" hidden>
+      <h2>AWESOME 상점</h2>
+      <div id="shop-body"></div>
+    </div>
+    <div class="panel">
+      <h2>재고</h2>
+      <table id="stock-table"></table>
+    </div>
+</aside>
+
+<section class="panel" id="factory-panel">
+  <h2>단지 배치 <span class="hint">시설 카드를 다른 카드 위로 드래그하면 합체 · 휠 = 줌 (가까이 가면 내부가 열림) · 카드 클릭 = 고정 펼침 · 출하 시설을 단지에 합치면 잉여가 재고로 들어옵니다</span></h2>
+  <div class="factory-bar">
+    <select id="add-res"></select>
+    <select id="add-purity"></select>
+    <select id="add-mtier"></select>
+    <button id="add-miner">채굴기</button>
+    <span class="bar-sep"></span>
+    <select id="add-machine"></select>
+    <select id="add-recipe"></select>
+    <button id="add-node">기계</button>
+    <span id="gen-bar">
+      <span class="bar-sep"></span>
+      <select id="add-gen"></select>
+      <button id="add-gen-btn">발전기</button>
+    </span>
+    <span class="bar-sep"></span>
+    <button id="add-sink" class="ghost">출하</button>
+    <button id="add-awesink" class="ghost">AWESOME 싱크</button>
+    <span id="bar-cost" class="chips"></span>
+  </div>
+  <div id="canvas-wrap">
+    <div id="canvas-inner">
+      <svg id="edge-svg"></svg>
+      <div id="node-layer"></div>
+    </div>
+  </div>
+</section>
+</div>
+
+<footer>수치는 본편(game/)과 동일한 실제 1.0 데이터. 단지 내부 물류는 자동(공유 저장고), 단지 사이만 벨트로 연결합니다. 연결선 클릭 = 벨트 업그레이드/삭제.</footer>
+
+<script src="../web/data.js"></script>
+<script src="game.js"></script>
+</body>
+</html>
