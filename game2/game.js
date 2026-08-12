@@ -279,6 +279,79 @@ function cxIdentity(cx) {
   return { name: first ? facDef(first).label + ' 외 ' + (cx.members.length - 1) : '단지', icon: first ? facDef(first).iconCn : null, cls: '' };
 }
 
+/* ---------- 단지 건물 일러스트 (인라인 SVG, 합체할수록 증축) ---------- */
+function cxArch(cx) {
+  if (cx.members.some(f => f.type === 'gen')) return 'power';
+  if (cx.members.some(f => f.type === 'machine')) return 'factory';
+  if (cx.members.some(f => f.type === 'miner')) return 'mine';
+  return 'logi';
+}
+const cxStage = cx => cx.members.length >= 7 ? 4 : cx.members.length >= 4 ? 3 : cx.members.length >= 2 ? 2 : 1;
+
+function buildingSVG(arch, stage) {
+  const W = 'var(--b-wall)', W2 = 'var(--b-wall2)', R = 'var(--b-roof)', D = 'var(--b-dark)';
+  let s = `<rect x="0" y="70" width="240" height="14" fill="${D}"/>`; // 지면
+  const win = (x, y, w, h) => `<rect class="win" x="${x}" y="${y}" width="${w}" height="${h}" rx="1"/>`;
+  const smoke = (x, y, d) => `<circle class="smoke" cx="${x}" cy="${y}" r="4" style="animation-delay:${d}s"/>`;
+
+  if (arch === 'mine') {
+    // 권양탑(헤드프레임) + 스테이지별 창고·광석 더미
+    s += `<polygon points="28,70 46,18 52,18 70,70" fill="none" stroke="${R}" stroke-width="4"/>`;
+    s += `<rect x="42" y="42" width="14" height="28" fill="${W2}"/>` + win(45, 48, 8, 6);
+    s += `<polygon points="20,70 34,58 48,70" fill="${W}"/>`; // 광석 더미
+    for (let i = 0; i < stage; i++) {
+      const x = 86 + i * 38, h = 20 + i * 7;
+      s += `<rect x="${x}" y="${70 - h}" width="34" height="${h}" fill="${i % 2 ? W : W2}"/>`;
+      s += `<polygon points="${x},${70 - h} ${x + 17},${70 - h - 8} ${x + 34},${70 - h}" fill="${R}"/>`;
+      s += win(x + 5, 70 - h + 6, 7, 6) + (i > 0 ? win(x + 20, 70 - h + 6, 7, 6) : '');
+    }
+  } else if (arch === 'factory') {
+    // 톱니지붕 공장 — 스테이지만큼 증축 + 굴뚝·연기
+    const bays = 1 + stage;
+    const bw = Math.min(44, 200 / bays);
+    for (let i = 0; i < bays; i++) {
+      const x = 20 + i * bw;
+      s += `<rect x="${x}" y="38" width="${bw}" height="32" fill="${i % 2 ? W : W2}"/>`;
+      s += `<polygon points="${x},38 ${x},26 ${x + bw * 0.62},38" fill="${R}"/>`; // 톱니
+      s += win(x + bw * 0.18, 48, bw * 0.28, 9) + win(x + bw * 0.58, 48, bw * 0.28, 9);
+    }
+    for (let i = 0; i < Math.min(stage, 3); i++) {
+      const x = 34 + i * 64;
+      s += `<rect x="${x}" y="12" width="8" height="26" fill="${W2}"/><rect x="${x - 1}" y="10" width="10" height="4" fill="${R}"/>`;
+      s += smoke(x + 4, 8, i * 0.7);
+    }
+  } else if (arch === 'power') {
+    // 발전소 — 냉각탑(증축) + 터빈동 + 번개
+    const towers = Math.min(stage, 3);
+    for (let i = 0; i < towers; i++) {
+      const x = 30 + i * 52;
+      s += `<path d="M ${x} 70 C ${x + 4} 44, ${x + 2} 34, ${x + 8} 22 L ${x + 26} 22 C ${x + 32} 34, ${x + 30} 44, ${x + 34} 70 Z" fill="${i % 2 ? W2 : W}"/>`;
+      s += smoke(x + 17, 16, i * 0.9);
+    }
+    const bx = 30 + towers * 52 + 4;
+    s += `<rect x="${bx}" y="40" width="${Math.max(40, 190 - bx)}" height="30" fill="${W2}"/>`;
+    s += `<polygon points="${bx},40 ${bx},32 ${bx + 30},40" fill="${R}"/>`;
+    s += win(bx + 8, 48, 10, 8) + win(bx + 24, 48, 10, 8);
+    s += `<polygon class="bolt" points="206,18 194,42 202,42 192,64 212,36 203,36 214,18" fill="var(--accent)"/>`;
+  } else {
+    // 물류 창고 — 상자 더미가 스테이지만큼
+    s += `<rect x="26" y="34" width="120" height="36" fill="${W2}"/>`;
+    s += `<polygon points="20,34 86,16 152,34" fill="${R}"/>`;
+    s += `<rect x="66" y="46" width="30" height="24" fill="${D}"/><rect x="68" y="48" width="26" height="3" fill="${W}"/><rect x="68" y="54" width="26" height="3" fill="${W}"/>`;
+    for (let i = 0; i < stage * 2; i++) {
+      const x = 158 + (i % 3) * 22, y = 56 - Math.floor(i / 3) * 16;
+      s += `<rect x="${x}" y="${y}" width="18" height="14" fill="${i % 2 ? W : W2}" stroke="${D}" stroke-width="1"/>`;
+    }
+  }
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.setAttribute('viewBox', '0 0 240 84');
+  svg.setAttribute('preserveAspectRatio', 'xMidYMax meet');
+  svg.innerHTML = s;
+  return svg;
+}
+
+const lastMemberCount = {}; // 합체 시 증축 애니메이션 감지 (런타임)
+
 /* ---------- 시뮬레이션 ---------- */
 let lastRates = {};
 let lastPower = { supply: BASE_POWER, demand: 0, eff: 1 };
@@ -1182,6 +1255,16 @@ function buildCanvas() {
     box.style.left = cx.x + 'px';
     box.style.top = cx.y + 'px';
     box.dataset.id = cx.id;
+
+    // 건물 일러스트 (합체할수록 증축, 합체 직후엔 증축 연출)
+    const visual = el('div', 'cx-visual arch-' + cxArch(cx));
+    visual.append(buildingSVG(cxArch(cx), cxStage(cx)));
+    if (lastMemberCount[cx.id] !== undefined && cx.members.length > lastMemberCount[cx.id]) {
+      box.classList.add('evolve');
+      setTimeout(() => box.classList.remove('evolve'), 700);
+    }
+    lastMemberCount[cx.id] = cx.members.length;
+    box.append(visual);
 
     // 헤더
     const head = el('div', 'cx-head');
