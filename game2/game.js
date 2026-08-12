@@ -1666,6 +1666,34 @@ function buildCanvas() {
       box.append(nWrap);
     }
 
+    // 건설 대기 재료 — 아직 안 지어진(0대) 시설을 1대씩 짓는 데 필요한 재료 합계
+    const unbuilt = cx.members.filter(f =>
+      f.type !== 'sink' && f.type !== 'awesink' && f.count === 0);
+    if (unbuilt.length) {
+      const agg = {};
+      for (const f of unbuilt) {
+        for (const [cn, n] of Object.entries(facDef(f).cost)) agg[cn] = (agg[cn] || 0) + n;
+      }
+      const bWrap = el('div', 'cx-needs cx-build');
+      bWrap.append(el('span', 'nl', `건설 대기 ${unbuilt.length}`));
+      for (const [item, need] of Object.entries(agg)) {
+        const chip = el('span', 'need');
+        const amt = el('b');
+        chip.append(iconEl(item, 's'), amt);
+        makeCraftLink(chip, item);
+        chip.title = `${iname(item)} — 미건설 시설 ${unbuilt.length}개(1대씩) 건설에 ${fmtN(need)}개 필요`
+          + (chip.classList.contains('craft') ? ' · 클릭하면 수동 제작 선택' : '');
+        bWrap.append(chip);
+        onUpdate(() => {
+          const have = stockOf(item);
+          amt.textContent = `${fmtN(have)}/${fmtN(need)}`;
+          chip.classList.toggle('short', have < need);
+          chip.classList.toggle('ok', have >= need);
+        });
+      }
+      box.append(bWrap);
+    }
+
     // 중간 줌: 아이콘 스트립
     const strip = el('div', 'cx-strip');
     for (const f of cx.members) {
@@ -1759,6 +1787,28 @@ function buildCanvas() {
           });
         }
         memWrap.append(ins);
+      }
+      // 이 시설 1대 건설(증설) 비용 — 보유/필요
+      const costs = Object.entries(def.cost);
+      if (costs.length && f.type !== 'sink' && f.type !== 'awesink') {
+        const bl = el('div', 'm-ins m-build');
+        bl.append(el('span', 'nl', '건설'));
+        for (const [cn, n] of costs) {
+          const chip = el('span', 'need');
+          const amt = el('b');
+          chip.append(iconEl(cn, 's'), amt);
+          makeCraftLink(chip, cn);
+          chip.title = `${iname(cn)} ×${n} — 1대 건설 비용`
+            + (chip.classList.contains('craft') ? ' · 클릭하면 수동 제작 선택' : '');
+          bl.append(chip);
+          onUpdate(() => {
+            const have = stockOf(cn);
+            amt.textContent = `${fmtN(have)}/${n}`;
+            chip.classList.toggle('short', have < n);
+            chip.classList.toggle('ok', have >= n);
+          });
+        }
+        memWrap.append(bl);
       }
       memBox.append(memWrap);
     }

@@ -154,6 +154,14 @@
 .need.lack b { color: var(--bad); }
 @keyframes lackBlink { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
 
+/* 건설 재료 (미건설 요약 + 시설별 1대 비용) — 보유/필요 */
+.cx-build .nl { color: var(--accent); }
+.need.ok { border-color: #3f5c3f; }
+.need.ok b { color: var(--good); }
+.need.short { border-color: #5c3f3b; background: rgba(200, 70, 60, .1); }
+.need.short b { color: var(--bad); }
+.m-build .nl { font-size: 9.5px; color: var(--accent); letter-spacing: .5px; }
+
 /* 시설별 투입 재료 줄 */
 .mem-wrap { border-bottom: 1px solid rgba(58, 51, 42, .4); }
 .mem-wrap:last-child { border-bottom: none; }
