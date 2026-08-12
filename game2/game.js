@@ -489,21 +489,28 @@ function tick(dtMin) {
             : powerEff < 0.99 ? '전력 부족' : null;
       }
     }
-    // 5) 출하/싱크: 내부에서 소비하지 않는 아이템만 반출
-    const consumed = new Set();
-    for (const f of cx.members) for (const p of facDef(f).ins) consumed.add(p.item);
+    // 5) 출하/싱크: 모든 잉여 반출 — 내부 소비 품목은 소비 1분치만 남기고 초과분을 내보냄
+    const consRate = {};
+    for (const f of cx.members) {
+      for (const p of facDef(f).ins) consRate[p.item] = (consRate[p.item] || 0) + p.rate * f.count;
+    }
     if (hasSink(cx)) {
       for (const cn of Object.keys(cx.pool)) {
-        if (!consumed.has(cn) && cx.pool[cn] > 0) { addStock(cn, cx.pool[cn]); cx.pool[cn] = 0; }
+        const reserve = consRate[cn] || 0; // 내부 소비 1분치 버퍼
+        const excess = cx.pool[cn] - reserve;
+        if (excess > 0) { addStock(cn, excess); cx.pool[cn] = reserve; }
       }
     }
     if (hasAwesink(cx)) {
       let rate = 0;
       for (const cn of Object.keys(cx.pool)) {
-        if (!consumed.has(cn) && cx.pool[cn] > 0 && ptsOf(cn) > 0) {
-          state.sinkPts += cx.pool[cn] * ptsOf(cn);
-          rate += cx.pool[cn] * ptsOf(cn) / dtMin;
-          cx.pool[cn] = 0;
+        if (ptsOf(cn) <= 0) continue;
+        const reserve = consRate[cn] || 0;
+        const excess = cx.pool[cn] - reserve;
+        if (excess > 0) {
+          state.sinkPts += excess * ptsOf(cn);
+          rate += excess * ptsOf(cn) / dtMin;
+          cx.pool[cn] = reserve;
         }
       }
       cx.ptsRate = rate;
