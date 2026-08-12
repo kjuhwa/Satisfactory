@@ -269,7 +269,9 @@ function cxIdentity(cx) {
   }
   const { outs } = cxPorts(cx);
   if (outs.length > 0) {
-    const main = outs.sort((a, b) => b.rate - a.rate)[0].item;
+    // 가장 가공도 높은 산출물로 명명 (광석보다 완제품이 단지의 정체성)
+    const main = outs.sort((a, b) =>
+      (itemDepth(b.item) - itemDepth(a.item)) || (b.rate - a.rate))[0].item;
     return { name: iname(main) + ' 단지', icon: main, cls: '' };
   }
   if (hasSink(cx) || hasAwesink(cx)) {
@@ -917,6 +919,166 @@ function buildPower() {
   });
 }
 
+/* ---------- 계획 모드: 목표 → 완성 단지 자동 생성 ---------- */
+const producersOf = {};
+for (const r of D.recipes) for (const [cn] of r.out) (producersOf[cn] ??= []).push(r);
+for (const [cn, list] of Object.entries(producersOf)) {
+  const nm = D.items[cn].n;
+  const score = r => (r.alt ? 4 : 0) + (r.out[0][0] !== cn ? 2 : 0) + (r.name !== nm ? 1 : 0);
+  list.sort((a, b) => score(a) - score(b) || a.name.localeCompare(b.name));
+}
+function planPick(item) {
+  return (producersOf[item] || []).find(r =>
+    state.machines.includes(r.machine) && (!r.alt || state.altUnlocked.includes(r.id))) || null;
+}
+function computePlan(target, rate) {
+  const recipes = new Map();
+  const raws = {};
+  const external = {};
+  const expand = (item, need, path) => {
+    if (D.raw.includes(item)) { raws[item] = (raws[item] || 0) + need; return; }
+    const r = planPick(item);
+    if (!r || path.has(item)) { external[item] = (external[item] || 0) + need; return; }
+    const outPerMin = perMin(r, r.out.find(o => o[0] === item)[1]);
+    const m = need / outPerMin;
+    const e = recipes.get(r.id) || { recipe: r, machines: 0 };
+    e.machines += m;
+    recipes.set(r.id, e);
+    const next = new Set(path);
+    next.add(item);
+    for (const [ing, amt] of r.in) expand(ing, m * perMin(r, amt), next);
+  };
+  expand(target, rate, new Set());
+  return { recipes: [...recipes.values()], raws, external };
+}
+const bestMinerTier = () => [3, 2, 1].find(minerTierUnlocked);
+
+function autoBuildPlan(plan) {
+  const members = [];
+  const tier = bestMinerTier();
+  for (const cn of Object.keys(plan.raws)) {
+    const f = { id: state.seq++, type: 'miner', resource: cn, count: 0 };
+    f.purity = DEPOSITS[cn]
+      ? (['pure', 'normal', 'impure'].find(p => depositsLeft(cn, p) > 0) || 'normal')
+      : 'normal';
+    if (!EXT[cn]) f.tier = tier;
+    members.push(f);
+  }
+  for (const e of plan.recipes) {
+    members.push({ id: state.seq++, type: 'machine', recipeId: e.recipe.id, count: 0 });
+  }
+  members.push({ id: state.seq++, type: 'sink', count: 1 }); // 잉여 자동 출하
+  const pos = spawnXY();
+  state.cx.push({ id: state.seq++, x: pos.x, y: pos.y, members, pool: {} });
+  save();
+  rebuild();
+  showBanner(`📋 ${iname(plan.target)} ${fmtN(plan.rate)}/분 단지가 통째로 배치되었습니다 — 단지를 클릭해 내부 시설의 + 로 기계를 구매하세요.`, 7000);
+}
+
+function openPlanner() {
+  const overlay = el('div', 'alt-overlay');
+  overlay.addEventListener('pointerdown', ev => { if (ev.target === overlay) overlay.remove(); });
+  const card = el('div', 'alt-card plan-card');
+  card.append(el('h3', null, '📋 계획 모드 — 목표를 정하면 완성 단지를 통째로 만들어 줍니다'));
+
+  const search = el('input');
+  search.placeholder = '목표 아이템 검색 (한글/영문)';
+  const listBox = el('div', 'plan-list');
+  const rateRow = el('div', 'plan-rate');
+  const rateInput = el('input');
+  rateInput.type = 'number'; rateInput.min = '0.1'; rateInput.step = 'any'; rateInput.value = '10';
+  rateRow.append(el('span', null, '목표 생산량'), rateInput, el('span', 'hint', '/분'));
+  const result = el('div', 'plan-result');
+  const btnRow = el('div', 'btn-wrap');
+  const buildBtn = el('button', null, '단지로 자동 생성');
+  const closeBtn = el('button', 'ghost', '닫기');
+  closeBtn.addEventListener('click', () => overlay.remove());
+  btnRow.append(buildBtn, closeBtn);
+  card.append(search, listBox, rateRow, result, btnRow);
+  overlay.append(card);
+  document.body.append(overlay);
+
+  let selItem = null;
+  let lastPlan = null;
+  const targets = Object.keys(D.items).filter(cn => producersOf[cn])
+    .sort((a, b) => iname(a).localeCompare(iname(b), 'ko'));
+
+  const renderList = () => {
+    const q = search.value.trim().toLowerCase();
+    listBox.textContent = '';
+    let shown = 0;
+    for (const cn of targets) {
+      if (q && !(iname(cn).toLowerCase().includes(q) || D.items[cn].n.toLowerCase().includes(q))) continue;
+      if (++shown > 60) break;
+      const row = el('div', 'hand-item' + (cn === selItem ? ' sel' : ''));
+      const left = el('span');
+      left.append(iconEl(cn, 's'), ' ' + iname(cn));
+      row.append(left, el('span', 'en', D.items[cn].n));
+      row.addEventListener('click', () => { selItem = cn; renderList(); renderPlan(); });
+      listBox.append(row);
+    }
+    if (!shown) listBox.append(el('div', 'hand-empty', '검색 결과가 없습니다'));
+  };
+
+  const renderPlan = () => {
+    result.textContent = '';
+    lastPlan = null;
+    buildBtn.disabled = true;
+    if (!selItem) { result.append(el('div', 'hint', '목표 아이템을 선택하세요.')); return; }
+    const rate = Math.max(0.1, parseFloat(rateInput.value) || 10);
+    const plan = computePlan(selItem, rate);
+    if (plan.recipes.length === 0) {
+      result.append(el('div', 'hint', '현재 해금된 기계로는 이 아이템을 생산할 수 없습니다.'));
+      return;
+    }
+    lastPlan = { ...plan, target: selItem, rate };
+    buildBtn.disabled = false;
+    let power = 0;
+    const t = el('table', 'plan-table');
+    for (const { recipe, machines } of plan.recipes.sort((a, b) => b.machines - a.machines)) {
+      power += linePower(recipe) * machines;
+      const tr = el('tr');
+      const nameTd = el('td');
+      nameTd.append(iconEl(recipe.out[0][0], 's'), ` ${recipe.ko} `, el('span', 'hint', `[${mname(recipe.machine)}]`));
+      tr.append(nameTd, el('td', 'num', `×${Math.ceil(machines - 1e-9)} (${fmtN(machines)})`));
+      t.append(tr);
+    }
+    const tier = bestMinerTier();
+    for (const [cn, r8] of Object.entries(plan.raws).sort((a, b) => b[1] - a[1])) {
+      const def = EXT[cn] || MINERS[tier];
+      const cnt = Math.ceil(r8 / def.rate - 1e-9);
+      power += def.power * (r8 / def.rate);
+      const tr = el('tr', 'plan-raw');
+      const nameTd = el('td');
+      nameTd.append(iconEl(cn, 's'),
+        ` ${iname(cn)} ${fmtN(r8)}/분 `,
+        el('span', 'hint', `(${EXT[cn] ? D.xnames[def.build] : '채굴기 Mk.' + tier} ×${cnt}, 보통 순도 기준)`));
+      tr.append(nameTd, el('td', 'num', ''));
+      t.append(tr);
+    }
+    for (const [cn, r8] of Object.entries(plan.external)) {
+      const tr = el('tr', 'plan-ext');
+      const nameTd = el('td');
+      nameTd.append(iconEl(cn, 's'), ` ${iname(cn)} ${fmtN(r8)}/분 — 레시피 잠김/순환, 반입 포트로 공급 필요`);
+      tr.append(nameTd, el('td', 'num', ''));
+      t.append(tr);
+    }
+    result.append(t);
+    result.append(el('div', 'hint',
+      `예상 전력 ~${fmtN(power)} MW (100% 클럭) · 내부 물류 자동 + 잉여는 출하 시설이 재고로 반출`));
+  };
+
+  buildBtn.addEventListener('click', () => {
+    if (!lastPlan) return;
+    autoBuildPlan(lastPlan);
+    overlay.remove();
+  });
+  search.oninput = renderList;
+  rateInput.oninput = renderPlan;
+  renderList();
+  renderPlan();
+}
+
 /* --- 시작 가이드 --- */
 const TUT_STEPS = [
   { text: '수동 채집에서 철 광석을 캐세요 (10개)', done: () => stockOf('Desc_OreIron_C') >= 10 },
@@ -1285,6 +1447,7 @@ function buildFactoryBar() {
   const awBtn = $('add-awesink');
   awBtn.style.display = state.ms >= 2 ? '' : 'none';
   awBtn.onclick = () => addComplex({ type: 'awesink', count: 1 });
+  $('open-plan').onclick = () => openPlanner();
 
   onUpdate(() => {
     $('add-miner').disabled = !state.miners;
