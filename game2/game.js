@@ -289,58 +289,105 @@ function cxArch(cx) {
 const cxStage = cx => cx.members.length >= 7 ? 4 : cx.members.length >= 4 ? 3 : cx.members.length >= 2 ? 2 : 1;
 
 function buildingSVG(arch, stage) {
-  const W = 'var(--b-wall)', W2 = 'var(--b-wall2)', R = 'var(--b-roof)', D = 'var(--b-dark)';
-  let s = `<rect x="0" y="70" width="240" height="14" fill="${D}"/>`; // 지면
-  const win = (x, y, w, h) => `<rect class="win" x="${x}" y="${y}" width="${w}" height="${h}" rx="1"/>`;
-  const smoke = (x, y, d) => `<circle class="smoke" cx="${x}" cy="${y}" r="4" style="animation-delay:${d}s"/>`;
+  const D = 'var(--b-dark)';
+  // 공통 그라데이션 (id 중복은 동일 정의라 무해)
+  let s = `<defs>
+    <linearGradient id="gw" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#5c5340"/><stop offset="1" stop-color="#3a3428"/></linearGradient>
+    <linearGradient id="gw2" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#4c4536"/><stop offset="1" stop-color="#2e2920"/></linearGradient>
+    <linearGradient id="gr" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#d08542"/><stop offset="1" stop-color="#8f5527"/></linearGradient>
+    <linearGradient id="gt" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#544c3c"/><stop offset="1" stop-color="#332e23"/></linearGradient>
+  </defs>`;
+  s += `<rect x="0" y="70" width="240" height="14" fill="${D}"/><rect x="0" y="69" width="240" height="1.5" fill="#463e30"/>`;
+  const win = (x, y, w, h) => `<rect x="${x - .8}" y="${y - .8}" width="${w + 1.6}" height="${h + 1.6}" rx="1.5" fill="#241f18"/><rect class="win" x="${x}" y="${y}" width="${w}" height="${h}" rx="1"/>`;
+  const smoke = (x, y, d, r) => `<circle class="smoke" cx="${x}" cy="${y}" r="${r || 4}" style="animation-delay:${d}s"/>`;
+  const steam = (x, y, d) => `<ellipse class="steam" cx="${x}" cy="${y}" rx="7" ry="5" style="animation-delay:${d}s"/>`;
 
   if (arch === 'mine') {
-    // 권양탑(헤드프레임) + 스테이지별 창고·광석 더미
-    s += `<polygon points="28,70 46,18 52,18 70,70" fill="none" stroke="${R}" stroke-width="4"/>`;
-    s += `<rect x="42" y="42" width="14" height="28" fill="${W2}"/>` + win(45, 48, 8, 6);
-    s += `<polygon points="20,70 34,58 48,70" fill="${W}"/>`; // 광석 더미
-    for (let i = 0; i < stage; i++) {
-      const x = 86 + i * 38, h = 20 + i * 7;
-      s += `<rect x="${x}" y="${70 - h}" width="34" height="${h}" fill="${i % 2 ? W : W2}"/>`;
-      s += `<polygon points="${x},${70 - h} ${x + 17},${70 - h - 8} ${x + 34},${70 - h}" fill="${R}"/>`;
-      s += win(x + 5, 70 - h + 6, 7, 6) + (i > 0 ? win(x + 20, 70 - h + 6, 7, 6) : '');
+    // 광석 더미 + 권양탑(도르래 회전) + 오르막 컨베이어(광석 흐름) + 저장 사일로
+    s += `<polygon points="8,70 24,56 42,70" fill="#57606c"/><polygon points="16,70 26,61 36,70" fill="#6b7684"/>`;
+    s += `<polygon points="34,70 52,22 58,22 76,70" fill="none" stroke="url(#gr)" stroke-width="4.5"/>`;
+    s += `<line x1="41" y1="52" x2="69" y2="52" stroke="#8f5527" stroke-width="2.5"/><line x1="45" y1="38" x2="65" y2="38" stroke="#8f5527" stroke-width="2.5"/>`;
+    s += `<g class="wheel"><circle cx="55" cy="20" r="8" fill="none" stroke="#c9bfa8" stroke-width="2.5"/><line x1="55" y1="12.5" x2="55" y2="27.5" stroke="#c9bfa8" stroke-width="2"/><line x1="47.5" y1="20" x2="62.5" y2="20" stroke="#c9bfa8" stroke-width="2"/></g>`;
+    s += `<rect x="46" y="48" width="20" height="22" fill="url(#gw2)"/><polygon points="44,48 56,41 68,48" fill="url(#gr)"/>` + win(50, 53, 11, 7);
+    // 컨베이어: 낮은 곳(권양탑)에서 사일로로
+    s += `<g transform="rotate(-11 76 62)">
+      <rect x="74" y="58" width="96" height="5.5" rx="2.5" fill="#211c15" stroke="#463e30" stroke-width="1"/>
+      <g class="belt-run">${[0, 24, 48, 72, 96].map(o => `<circle cx="${80 + o}" cy="57" r="3.2" fill="#7d8a99"/>`).join('')}</g>
+    </g>`;
+    // 사일로 (도착지)
+    s += `<rect x="176" y="30" width="30" height="40" rx="3" fill="url(#gw)"/><ellipse cx="191" cy="30" rx="15" ry="5" fill="url(#gr)"/>` + win(184, 44, 13, 8);
+    // 증축: 창고 동
+    for (let i = 0; i < Math.min(stage - 1, 2); i++) {
+      const x = 96 + i * 40, h = 15 + i * 5;
+      s += `<rect x="${x}" y="${70 - h}" width="34" height="${h}" fill="url(#gw2)"/><polygon points="${x - 2},${70 - h} ${x + 17},${70 - h - 7} ${x + 36},${70 - h}" fill="url(#gr)"/>` + win(x + 6, 70 - h + 4, 8, 6);
     }
+    if (stage >= 4) s += `<rect x="212" y="40" width="20" height="30" rx="2" fill="url(#gw2)"/><ellipse cx="222" cy="40" rx="10" ry="4" fill="url(#gr)"/>`;
   } else if (arch === 'factory') {
-    // 톱니지붕 공장 — 스테이지만큼 증축 + 굴뚝·연기
-    const bays = 1 + stage;
-    const bw = Math.min(44, 200 / bays);
+    // 톱니지붕 공장 + 회전 톱니바퀴 + 프레스 + 출하 컨베이어
+    const bays = Math.min(1 + stage, 5);
+    const bw = Math.min(42, 172 / bays);
     for (let i = 0; i < bays; i++) {
-      const x = 20 + i * bw;
-      s += `<rect x="${x}" y="38" width="${bw}" height="32" fill="${i % 2 ? W : W2}"/>`;
-      s += `<polygon points="${x},38 ${x},26 ${x + bw * 0.62},38" fill="${R}"/>`; // 톱니
-      s += win(x + bw * 0.18, 48, bw * 0.28, 9) + win(x + bw * 0.58, 48, bw * 0.28, 9);
+      const x = 16 + i * bw;
+      s += `<rect x="${x}" y="36" width="${bw}" height="34" fill="url(#${i % 2 ? 'gw' : 'gw2'})"/>`;
+      s += `<polygon points="${x},36 ${x},24 ${x + bw * 0.62},36" fill="url(#gr)"/><line x1="${x}" y1="24" x2="${x + bw * 0.62}" y2="36" stroke="#e0a060" stroke-width="1.2"/>`;
+      if (i === 0) {
+        // 프레스가 보이는 큰 문
+        s += `<rect x="${x + 6}" y="46" width="${bw - 12}" height="24" rx="2" fill="#191510"/>`;
+        s += `<rect class="forge" x="${x + 8}" y="62" width="${bw - 16}" height="7" rx="1"/>`;
+        s += `<rect class="piston" x="${x + bw / 2 - 4}" y="44" width="8" height="12" rx="1" fill="#8a7f6c"/><rect class="piston" x="${x + bw / 2 - 7}" y="54" width="14" height="4" rx="1" fill="#a89a80"/>`;
+      } else {
+        s += win(x + bw * 0.16, 46, bw * 0.3, 10) + win(x + bw * 0.56, 46, bw * 0.3, 10);
+      }
     }
+    // 벽면 톱니바퀴
+    const gx = 16 + bw * 1.5, gy = 30;
+    s += `<g class="gear"><circle cx="${gx}" cy="${gy}" r="7.5" fill="#6b5f4a" stroke="#241f18" stroke-width="1.5"/>${[0, 60, 120].map(a => `<rect x="${gx - 1.6}" y="${gy - 11}" width="3.2" height="22" rx="1" fill="#6b5f4a" transform="rotate(${a} ${gx} ${gy})"/>`).join('')}<circle cx="${gx}" cy="${gy}" r="2.5" fill="#241f18"/></g>`;
+    // 굴뚝 + 연기
     for (let i = 0; i < Math.min(stage, 3); i++) {
-      const x = 34 + i * 64;
-      s += `<rect x="${x}" y="12" width="8" height="26" fill="${W2}"/><rect x="${x - 1}" y="10" width="10" height="4" fill="${R}"/>`;
-      s += smoke(x + 4, 8, i * 0.7);
+      const x = 40 + i * 56;
+      s += `<rect x="${x}" y="10" width="9" height="26" fill="url(#gt)"/><rect x="${x - 1.5}" y="8" width="12" height="4" rx="1" fill="url(#gr)"/>`;
+      s += smoke(x + 4.5, 6, i * 0.7) + smoke(x + 4.5, 6, i * 0.7 + 1.1, 3);
     }
+    // 출하 컨베이어 (상자가 흘러나감)
+    s += `<rect x="192" y="63" width="44" height="5" rx="2.5" fill="#211c15" stroke="#463e30" stroke-width="1"/>`;
+    s += `<g class="crate-run">${[0, 18].map(o => `<g><rect x="${196 + o}" y="55" width="9" height="8" rx="1" fill="url(#gr)" stroke="#241f18" stroke-width="1"/><line x1="${200.5 + o}" y1="55" x2="${200.5 + o}" y2="63" stroke="#241f18" stroke-width="1"/></g>`).join('')}</g>`;
   } else if (arch === 'power') {
-    // 발전소 — 냉각탑(증축) + 터빈동 + 번개
+    // 냉각탑(증기) + 터빈동(팬 회전) + 송전탑(스파크)
     const towers = Math.min(stage, 3);
     for (let i = 0; i < towers; i++) {
-      const x = 30 + i * 52;
-      s += `<path d="M ${x} 70 C ${x + 4} 44, ${x + 2} 34, ${x + 8} 22 L ${x + 26} 22 C ${x + 32} 34, ${x + 30} 44, ${x + 34} 70 Z" fill="${i % 2 ? W2 : W}"/>`;
-      s += smoke(x + 17, 16, i * 0.9);
+      const x = 22 + i * 46;
+      s += `<path d="M ${x} 70 C ${x + 5} 46, ${x + 3} 36, ${x + 9} 24 L ${x + 25} 24 C ${x + 31} 36, ${x + 29} 46, ${x + 34} 70 Z" fill="url(#gt)"/>`;
+      s += `<ellipse cx="${x + 17}" cy="24" rx="8" ry="2.5" fill="#241f18"/>`;
+      s += steam(x + 17, 18, i * 0.9) + steam(x + 13, 20, i * 0.9 + 1.3);
     }
-    const bx = 30 + towers * 52 + 4;
-    s += `<rect x="${bx}" y="40" width="${Math.max(40, 190 - bx)}" height="30" fill="${W2}"/>`;
-    s += `<polygon points="${bx},40 ${bx},32 ${bx + 30},40" fill="${R}"/>`;
-    s += win(bx + 8, 48, 10, 8) + win(bx + 24, 48, 10, 8);
-    s += `<polygon class="bolt" points="206,18 194,42 202,42 192,64 212,36 203,36 214,18" fill="var(--accent)"/>`;
+    // 터빈동
+    const bx = 22 + towers * 46 + 6;
+    const bwid = Math.max(46, 196 - bx);
+    s += `<rect x="${bx}" y="38" width="${bwid}" height="32" rx="2" fill="url(#gw2)"/><polygon points="${bx},38 ${bx},30 ${bx + 34},38" fill="url(#gr)"/>`;
+    const fx = bx + bwid / 2, fy = 54;
+    s += `<circle cx="${fx}" cy="${fy}" r="10" fill="#191510" stroke="#463e30" stroke-width="1.5"/>`;
+    s += `<g class="fan">${[0, 120, 240].map(a => `<path d="M ${fx} ${fy} L ${fx - 2.5} ${fy - 8.5} A 4 4 0 0 1 ${fx + 2.5} ${fy - 8.5} Z" fill="#c9bfa8" transform="rotate(${a} ${fx} ${fy})"/>`).join('')}<circle cx="${fx}" cy="${fy}" r="2" fill="#463e30"/></g>`;
+    // 송전탑 + 전선 + 스파크
+    s += `<line x1="218" y1="70" x2="218" y2="26" stroke="#8a7f6c" stroke-width="2.5"/><line x1="210" y1="34" x2="226" y2="34" stroke="#8a7f6c" stroke-width="2"/><line x1="212" y1="28" x2="224" y2="28" stroke="#8a7f6c" stroke-width="2"/>`;
+    s += `<path d="M ${bx + 30} 36 Q ${(bx + 30 + 218) / 2} 46, 218 30" fill="none" stroke="#5d5443" stroke-width="1.5"/>`;
+    s += `<circle class="sparkdot" cx="0" cy="0" r="2.2" fill="#fad56e"><animateMotion dur="1.6s" repeatCount="indefinite" path="M ${bx + 30} 36 Q ${(bx + 30 + 218) / 2} 46, 218 30"/></circle>`;
+    s += `<polygon class="bolt" points="230,10 222,26 227,26 220,40 233,22 227,22 234,10" fill="var(--accent)"/>`;
   } else {
-    // 물류 창고 — 상자 더미가 스테이지만큼
-    s += `<rect x="26" y="34" width="120" height="36" fill="${W2}"/>`;
-    s += `<polygon points="20,34 86,16 152,34" fill="${R}"/>`;
-    s += `<rect x="66" y="46" width="30" height="24" fill="${D}"/><rect x="68" y="48" width="26" height="3" fill="${W}"/><rect x="68" y="54" width="26" height="3" fill="${W}"/>`;
-    for (let i = 0; i < stage * 2; i++) {
-      const x = 158 + (i % 3) * 22, y = 56 - Math.floor(i / 3) * 16;
-      s += `<rect x="${x}" y="${y}" width="18" height="14" fill="${i % 2 ? W : W2}" stroke="${D}" stroke-width="1"/>`;
+    // 물류 창고 + 갠트리 크레인(왕복) + 경광등 + 화물
+    const ww = Math.min(96 + stage * 12, 132);
+    s += `<rect x="20" y="36" width="${ww}" height="34" rx="2" fill="url(#gw)"/>`;
+    s += `<polygon points="14,36 ${20 + ww / 2},16 ${26 + ww},36" fill="url(#gr)"/><line x1="14" y1="36" x2="${20 + ww / 2}" y2="16" stroke="#e0a060" stroke-width="1.2"/>`;
+    s += `<rect x="${20 + ww / 2 - 17}" y="46" width="34" height="24" rx="2" fill="#191510"/>${[0, 1, 2].map(i => `<rect x="${20 + ww / 2 - 15}" y="${49 + i * 7}" width="30" height="2.5" rx="1" fill="#3a3428"/>`).join('')}`;
+    s += win(28, 44, 12, 8);
+    s += `<circle class="beacon" cx="${20 + ww / 2}" cy="13" r="2.6"/>`;
+    // 크레인 레일 + 트롤리
+    const rx0 = 20 + ww + 8;
+    s += `<line x1="${rx0}" y1="26" x2="234" y2="26" stroke="#8a7f6c" stroke-width="2.5"/><line x1="${rx0 + 2}" y1="70" x2="${rx0 + 2}" y2="26" stroke="#8a7f6c" stroke-width="2.5"/><line x1="232" y1="70" x2="232" y2="26" stroke="#8a7f6c" stroke-width="2.5"/>`;
+    s += `<g class="crane"><rect x="${rx0 + 8}" y="24" width="14" height="6" rx="1" fill="url(#gr)"/><line x1="${rx0 + 15}" y1="30" x2="${rx0 + 15}" y2="44" stroke="#c9bfa8" stroke-width="1.5"/><rect x="${rx0 + 10}" y="44" width="10" height="9" rx="1" fill="url(#gw)" stroke="#241f18" stroke-width="1"/></g>`;
+    // 쌓인 화물
+    for (let i = 0; i < Math.min(stage * 2, 6); i++) {
+      const x = rx0 + 6 + (i % 3) * 16, y = 62 - Math.floor(i / 3) * 10;
+      s += `<rect x="${x}" y="${y}" width="13" height="8" rx="1" fill="url(#${i % 2 ? 'gw' : 'gw2'})" stroke="#241f18" stroke-width="1"/>`;
     }
   }
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');

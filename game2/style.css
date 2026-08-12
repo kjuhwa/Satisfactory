@@ -23,15 +23,59 @@
 .cx-visual svg { width: 100%; height: 100%; display: block; }
 .cx-visual .win { fill: #55492f; transition: fill .4s; }
 .cx.working .cx-visual .win { fill: #fad56e; }
-.cx-visual .smoke { fill: rgba(200, 190, 170, .0); }
+
+/* 회전 부품 (도르래·톱니바퀴·터빈 팬) — 가동 중에만 회전 */
+.cx-visual .wheel, .cx-visual .gear, .cx-visual .fan {
+  transform-box: fill-box; transform-origin: 50% 50%;
+}
+.cx.working .cx-visual .wheel { animation: rot 2.4s linear infinite; }
+.cx.working .cx-visual .gear { animation: rot 5s linear infinite; }
+.cx.working .cx-visual .fan { animation: rot 1s linear infinite; }
+@keyframes rot { to { transform: rotate(360deg); } }
+
+/* 컨베이어 위 광석·상자 흐름 */
+.cx.working .cx-visual .belt-run { animation: beltRun 1.6s linear infinite; }
+@keyframes beltRun { from { transform: translateX(-24px); } to { transform: translateX(0); } }
+.cx.working .cx-visual .crate-run { animation: crateRun 2.2s linear infinite; }
+@keyframes crateRun {
+  0% { transform: translateX(-10px); opacity: 0; }
+  15% { opacity: 1; }
+  85% { opacity: 1; }
+  100% { transform: translateX(28px); opacity: 0; }
+}
+
+/* 프레스 왕복 + 화덕 불빛 */
+.cx.working .cx-visual .piston { animation: press .8s ease-in-out infinite; }
+@keyframes press { 0%, 100% { transform: translateY(0); } 45% { transform: translateY(7px); } 60% { transform: translateY(7px); } }
+.cx-visual .forge { fill: #33261a; }
+.cx.working .cx-visual .forge { fill: #e88a3a; animation: forgeGlow .8s ease-in-out infinite; }
+@keyframes forgeGlow { 0%, 100% { opacity: .5; } 50% { opacity: 1; } }
+
+/* 굴뚝 연기 · 냉각탑 증기 */
+.cx-visual .smoke, .cx-visual .steam { fill: rgba(200, 190, 170, 0); }
 .cx.working .cx-visual .smoke { animation: smokeUp 2.2s linear infinite; }
 @keyframes smokeUp {
-  0% { transform: translateY(0); opacity: 0; }
+  0% { transform: translateY(0) scale(.8); opacity: 0; }
   15% { opacity: .5; }
-  100% { transform: translateY(-16px); opacity: 0; }
+  100% { transform: translateY(-17px) scale(1.5); opacity: 0; }
 }
-.cx-visual .bolt { opacity: .35; }
+.cx.working .cx-visual .steam { animation: steamUp 2.8s linear infinite; }
+@keyframes steamUp {
+  0% { transform: translateY(0) scale(.7); opacity: 0; }
+  20% { opacity: .55; }
+  100% { transform: translateY(-15px) scale(1.9); opacity: 0; }
+}
+
+/* 송전 스파크 · 번개 · 경광등 · 크레인 */
+.cx-visual .sparkdot { opacity: 0; }
+.cx.working .cx-visual .sparkdot { opacity: 1; }
+.cx-visual .bolt { opacity: .3; }
 .cx.working .cx-visual .bolt { opacity: 1; filter: drop-shadow(0 0 4px rgba(250, 213, 110, .8)); animation: spark .9s steps(2) infinite; }
+.cx-visual .beacon { fill: #5a4030; }
+.cx.working .cx-visual .beacon { animation: beaconBlink 1.2s steps(1) infinite; }
+@keyframes beaconBlink { 0%, 100% { fill: #ff9a4a; filter: drop-shadow(0 0 3px #ff9a4a); } 50% { fill: #5a4030; filter: none; } }
+.cx.working .cx-visual .crane { animation: craneMove 4s ease-in-out infinite alternate; }
+@keyframes craneMove { from { transform: translateX(0); } to { transform: translateX(26px); } }
 
 /* 합체 직후 증축 연출 */
 .cx.evolve .cx-visual { animation: evolvePop .6s ease-out; }
