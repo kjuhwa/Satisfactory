@@ -253,6 +253,23 @@ function cxPorts(cx) {
   return { ins, outs };
 }
 
+/**
+ * 단지가 소비하는 모든 재료 (내부 공급분도 포함 — 합체로 상쇄돼 포트에서 사라지는 것까지 보여주기 위함).
+ * 아이템별로 총 소비/내부 생산/외부 필요량을 돌려준다.
+ */
+function cxNeeds(cx) {
+  const { prod, cons } = cxFlows(cx);
+  return Object.keys(cons)
+    .filter(cn => cons[cn] > 0.05)
+    .map(cn => ({
+      item: cn,
+      cons: cons[cn],
+      inner: Math.min(prod[cn] || 0, cons[cn]),
+      outer: Math.max(0, cons[cn] - (prod[cn] || 0)),
+    }))
+    .sort((a, b) => (b.outer - a.outer) || (b.cons - a.cons));
+}
+
 const hasSink = cx => cx.members.some(f => f.type === 'sink');
 const hasAwesink = cx => cx.members.some(f => f.type === 'awesink');
 
@@ -457,6 +474,9 @@ function tick(dtMin) {
       f.eff = frac;
       f.why = frac >= 0.99 || !limit ? null
         : limitKind === 'in' ? `연료 부족: ${iname(limit)}` : `폐기물 정체: ${iname(limit)}`;
+      const bound = limit && frac < 0.999;
+      f.lack = bound && limitKind === 'in' ? limit : null;
+      f.jam = bound && limitKind === 'out' ? limit : null;
     }
   }
 
@@ -496,6 +516,7 @@ function tick(dtMin) {
       return da - db;
     });
     for (const f of order) {
+      if (f.type === 'miner' || f.type === 'machine') f.lack = f.jam = null;
       if (f.type === 'miner') {
         if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
         const def = facDef(f);
@@ -508,6 +529,8 @@ function tick(dtMin) {
         f.why = f.eff >= 0.99 ? null
           : space < want ? `저장고 가득: ${iname(out.item)} — 소비·수출·출하가 필요합니다`
           : powerEff < 0.99 ? '전력 부족' : null;
+        f.lack = null;
+        f.jam = space < want ? out.item : null;
       } else if (f.type === 'machine') {
         if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
         const def = facDef(f);
@@ -534,8 +557,12 @@ function tick(dtMin) {
         f.eff = powerEff * frac;
         f.why = f.eff >= 0.99 ? null
           : limit && frac < powerEff
-            ? (limitKind === 'in' ? `재료 부족: ${iname(limit)}` : `저장고 가득: ${iname(limit)}`)
+            ? (limitKind === 'in' ? `재료 부족: ${iname(limit)}`
+                : `저장고 가득: ${iname(limit)} — 출하 시설을 합치거나 소비처를 늘리세요`)
             : powerEff < 0.99 ? '전력 부족' : null;
+        const bound = limit && frac < 0.999;
+        f.lack = bound && limitKind === 'in' ? limit : null;
+        f.jam = bound && limitKind === 'out' ? limit : null;
       }
     }
     // 5) 출하/싱크: 모든 잉여 반출 — 내부 소비 품목은 소비 1분치만 남기고 초과분을 내보냄
@@ -599,6 +626,7 @@ function sfx(name) {
     else if (name === 'coupon') { beep(880, .1, 0, 'triangle'); beep(1175, .18, .08, 'triangle'); }
     else if (name === 'unlock') { beep(659, .12, 0); beep(880, .25, .09); }
     else if (name === 'merge') { beep(392, .1, 0, 'square', .07); beep(523, .16, .07, 'square', .07); }
+    else if (name === 'upgrade') { beep(660, .09, 0, 'square', .06); beep(990, .13, .08, 'square', .06); }
     else if (name === 'won') { [523, 659, 784, 1047, 1319].forEach((f, i) => beep(f, .35, i * .13)); }
   } catch (e) { /* 무시 */ }
 }
@@ -1178,6 +1206,34 @@ function upgradeEdge(id) {
   e.tier = t + 1;
   save(); rebuild();
 }
+/**
+ * 벨트가 실제로 병목인지 진단.
+ * 이동량은 min(보낼 양, 벨트 용량, 받는 쪽 빈 자리) 이므로 (tick 3번 항목),
+ * 흐름이 용량보다 낮다면 원인은 벨트가 아니라 상류 공급이나 하류 수요다.
+ */
+function edgeDiag(e) {
+  const cap = beltOf(e).cap;
+  const flow = lastEdgeFlow[e.id] || 0;
+  const src = cxById(e.from.cx), dst = cxById(e.to.cx);
+  const srcPool = src ? (src.pool[e.from.item] || 0) : 0;
+  const dstPool = dst ? (dst.pool[e.to.item] || 0) : 0;
+  const dstFull = dst && dstPool >= poolCap(dst) * 0.95;
+  if (flow >= cap * 0.97) {
+    return { bottleneck: true, text: '벨트가 꽉 찼습니다 — 업그레이드하면 그만큼 더 흐릅니다' };
+  }
+  if (dstFull) {
+    return {
+      bottleneck: false,
+      text: `받는 쪽 저장고가 가득(${fmtN(dstPool)}/${poolCap(dst)})해 수요만큼만 흐릅니다`
+        + ' — 벨트 병목이 아니라 하류 소비 부족입니다',
+    };
+  }
+  if (srcPool <= 0.5 && flow < cap * 0.5) {
+    return { bottleneck: false, text: '보낼 재고가 없습니다 — 벨트 병목이 아니라 상류 생산 부족입니다' };
+  }
+  return { bottleneck: false, text: `용량이 ${fmtN(cap - flow)}/분 남았습니다 — 지금은 벨트 병목이 아닙니다` };
+}
+
 function openEdgeMenu(ev, edgeId) {
   closeEdgeMenu();
   const e = state.edges.find(x => x.id === edgeId);
@@ -1188,9 +1244,12 @@ function openEdgeMenu(ev, edgeId) {
   head.append(iconEl(e.from.item, 's'), ` ${iname(e.from.item)} `, el('b', null, `Mk.${t}`));
   menu.append(head);
   menu.append(el('div', 'em-line', `용량 ${beltOf(e).cap}/분 · 현재 흐름 ${fmtN(lastEdgeFlow[e.id] || 0)}/분`));
+  const diag = edgeDiag(e);
+  menu.append(el('div', 'em-diag' + (diag.bottleneck ? ' hot' : ''), (diag.bottleneck ? '⚠ ' : 'ℹ ') + diag.text));
   if (t < 5) {
     const next = BELT_TIERS[t + 1];
-    const up = el('button', null, `Mk.${t + 1} 업그레이드 (${next.cap}/분)`);
+    // 병목이 아닐 때 업그레이드는 효과가 없으므로 강조하지 않는다
+    const up = el('button', diag.bottleneck ? null : 'ghost', `Mk.${t + 1} 업그레이드 (${next.cap}/분)`);
     up.disabled = !canAfford(next.cost);
     up.addEventListener('click', () => { upgradeEdge(edgeId); closeEdgeMenu(); });
     menu.append(up);
@@ -1203,8 +1262,9 @@ function openEdgeMenu(ev, edgeId) {
   const del = el('button', 'ghost danger', '연결 삭제' + (t > 1 ? ' (업그레이드 환불)' : ''));
   del.addEventListener('click', () => { removeEdge(edgeId); closeEdgeMenu(); });
   menu.append(del);
-  menu.style.left = Math.min(ev.clientX, window.innerWidth - 240) + 'px';
-  menu.style.top = Math.min(ev.clientY, window.innerHeight - 180) + 'px';
+  // 진단줄 때문에 메뉴가 최대 300px까지 넓어질 수 있다 (style.css .edge-menu)
+  menu.style.left = Math.max(8, Math.min(ev.clientX, window.innerWidth - 312)) + 'px';
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - 220) + 'px';
   document.body.append(menu);
   edgeMenu = menu;
 }
@@ -1303,6 +1363,76 @@ function removeComplex(id) {
   removeComplexInner(id);
   save(); rebuild();
 }
+/** 채굴기 Mk.N → Mk.N+1 차액 (보유 대수만큼, 이전 건물은 환불되므로 차액만 받는다) */
+function minerUpgradeCost(f, nextTier) {
+  if (!MINERS[nextTier]) return {};
+  const from = buildCost(MINERS[f.tier || 1].build);
+  const to = buildCost(MINERS[nextTier].build);
+  const cost = {};
+  const n = Math.max(f.count, 1);
+  for (const cn of new Set([...Object.keys(from), ...Object.keys(to)])) {
+    const diff = ((to[cn] || 0) - (from[cn] || 0)) * n;
+    if (diff > 0) cost[cn] = diff;
+  }
+  return cost;
+}
+
+/** 배치된 채굴기를 제자리에서 한 단계 업그레이드 (철거 → 재배치 없이) */
+function upgradeMiner(cxId, facId) {
+  const cx = cxById(cxId);
+  const f = cx && cx.members.find(x => x.id === facId);
+  if (!f || f.type !== 'miner' || EXT[f.resource] || f.count <= 0) return;
+  const next = (f.tier || 1) + 1;
+  if (!MINERS[next] || !minerTierUnlocked(next)) return;
+  const cost = minerUpgradeCost(f, next);
+  if (!canAfford(cost)) return;
+  pay(cost);
+  f.tier = next;
+  sfx('upgrade');
+  showBanner(`⛏ ${iname(f.resource)} 채굴기 ×${f.count} → Mk.${next} (${MINERS[next].rate}/분)`, 3500);
+  save(); rebuild();
+}
+
+/** 지금 한 단계 올릴 수 있는 채굴기들 (해금 여부만 판단, 자원은 별도 확인) */
+function upgradableMiners() {
+  const list = [];
+  for (const cx of state.cx) {
+    for (const f of cx.members) {
+      if (f.type !== 'miner' || EXT[f.resource] || f.count <= 0) continue;
+      const next = (f.tier || 1) + 1;
+      if (MINERS[next] && minerTierUnlocked(next)) list.push({ cx, f, next });
+    }
+  }
+  return list;
+}
+const upgradeAllCost = list => {
+  const total = {};
+  for (const { f, next } of list) {
+    for (const [cn, n] of Object.entries(minerUpgradeCost(f, next))) total[cn] = (total[cn] || 0) + n;
+  }
+  return total;
+};
+
+/** 여유가 되는 만큼 채굴기를 일괄 업그레이드 (비싼 것부터 굶지 않게 저렴한 순으로) */
+function upgradeAllMiners() {
+  const list = upgradableMiners()
+    .sort((a, b) => Object.values(minerUpgradeCost(a.f, a.next)).reduce((s, n) => s + n, 0)
+                  - Object.values(minerUpgradeCost(b.f, b.next)).reduce((s, n) => s + n, 0));
+  let done = 0;
+  for (const { f, next } of list) {
+    const cost = minerUpgradeCost(f, next);
+    if (!canAfford(cost)) continue;
+    pay(cost);
+    f.tier = next;
+    done++;
+  }
+  if (!done) return;
+  sfx('upgrade');
+  showBanner(`⛏ 채굴기 ${done}종을 업그레이드했습니다`
+    + (done < list.length ? ` (재료가 부족해 ${list.length - done}종은 남았습니다)` : ''), 4000);
+  save(); rebuild();
+}
+
 function removeFacility(cxId, facId) {
   const cx = cxById(cxId);
   if (!cx) return;
@@ -1372,7 +1502,8 @@ function buildFactoryBar() {
       opt.disabled = !unlocked;
       tierSel.append(opt);
     }
-    if (prev && minerTierUnlocked(+prev)) tierSel.value = prev;
+    // 해금했는데도 Mk.1로 되돌아가면 매번 다시 고르게 되므로, 기본값은 최고 해금 티어
+    tierSel.value = prev && minerTierUnlocked(+prev) ? prev : bestMinerTier();
   };
   refreshTier();
 
@@ -1441,6 +1572,19 @@ function buildFactoryBar() {
     if (!EXT[resSel.value]) fac.tier = +tierSel.value || 1;
     addComplex(fac);
   };
+  const upAll = $('up-miners');
+  upAll.onclick = () => upgradeAllMiners();
+  onUpdate(() => {
+    const list = upgradableMiners();
+    upAll.hidden = list.length === 0;
+    if (upAll.hidden) return;
+    const cost = upgradeAllCost(list);
+    upAll.disabled = !canAfford(cost);
+    upAll.textContent = `⛏⬆ 전체 업그레이드 (${list.length})`;
+    upAll.title = `배치된 채굴기 ${list.length}종을 한 단계씩 올립니다`
+      + `\n필요: ${Object.entries(cost).map(([cn, n]) => `${iname(cn)}×${fmtN(n)}`).join(', ') || '무료'}`;
+  });
+
   $('add-node').onclick = () => { if (rSel.value) addComplex({ type: 'machine', recipeId: rSel.value, count: 0 }); };
   $('add-gen-btn').onclick = () => { if (genSel.value) addComplex({ type: 'gen', genKey: genSel.value, count: 0 }); };
   $('add-sink').onclick = () => addComplex({ type: 'sink', count: 1 });
@@ -1498,6 +1642,30 @@ function buildCanvas() {
     const sub = el('div', 'cx-sub');
     box.append(sub);
 
+    // 필요 재료 — 줌과 무관하게 항상 표시 (합체로 상쇄된 내부 소비까지)
+    const needs = cxNeeds(cx);
+    if (needs.length) {
+      const nWrap = el('div', 'cx-needs');
+      nWrap.append(el('span', 'nl', '필요'));
+      for (const n of needs) {
+        const chip = el('span', 'need');
+        const amt = el('b');
+        chip.append(iconEl(n.item, 's'), amt);
+        chip.title = `${iname(n.item)} — 소비 ${fmtN(n.cons)}/분`
+          + (n.inner > 0.05 ? ` · 단지 내부 공급 ${fmtN(n.inner)}/분` : '')
+          + (n.outer > 0.05 ? ` · 외부 반입 필요 ${fmtN(n.outer)}/분` : ' · 내부에서 전량 자급');
+        nWrap.append(chip);
+        onUpdate(() => {
+          const have = cx.pool[n.item] || 0;
+          const starving = cx.members.some(f => f.lack === n.item);
+          amt.textContent = fmtN(have);
+          chip.classList.toggle('lack', starving);
+          chip.classList.toggle('ext', !starving && n.outer > 0.05);
+        });
+      }
+      box.append(nWrap);
+    }
+
     // 중간 줌: 아이콘 스트립
     const strip = el('div', 'cx-strip');
     for (const f of cx.members) {
@@ -1511,6 +1679,7 @@ function buildCanvas() {
     const memBox = el('div', 'cx-members');
     for (const f of cx.members) {
       const def = facDef(f);
+      const memWrap = el('div', 'mem-wrap');
       const row = el('div', 'mem');
       const nm = el('span', 'm-name');
       if (def.iconCn) nm.append(iconEl(def.iconCn, 's'), ' ');
@@ -1535,6 +1704,25 @@ function buildCanvas() {
         const clk = el('button', 'ghost clk');
         clk.addEventListener('click', ev => openClockMenu(ev, cx.id, f.id));
         row.append(minus, cnt, plus, clk);
+        if (f.type === 'miner' && !EXT[f.resource]) {
+          const up = el('button', 'up');
+          row.append(up);
+          onUpdate(() => {
+            const next = (f.tier || 1) + 1;
+            const cost = minerUpgradeCost(f, next);
+            up.hidden = !MINERS[next];
+            if (up.hidden) return;
+            up.textContent = '⬆Mk.' + next;
+            const locked = !minerTierUnlocked(next);
+            up.disabled = locked || !canAfford(cost) || f.count <= 0;
+            up.title = locked
+              ? `Mk.${next} 미해금 (마일스톤 ${next === 2 ? 4 : 6} 필요)`
+              : f.count <= 0 ? '채굴기가 없습니다'
+              : `Mk.${next}로 업그레이드 — ${MINERS[f.tier || 1].rate} → ${MINERS[next].rate}/분`
+                + `\n차액: ${Object.entries(cost).map(([cn, n]) => `${iname(cn)}×${fmtN(n)}`).join(', ') || '무료'}`;
+          });
+          up.addEventListener('click', () => upgradeMiner(cx.id, f.id));
+        }
         onUpdate(() => {
           cnt.textContent = f.count;
           plus.disabled = !canAfford(def.cost) || noDeposit();
@@ -1554,7 +1742,25 @@ function buildCanvas() {
       del.title = '시설 삭제 (비용 환불)';
       del.addEventListener('click', () => removeFacility(cx.id, f.id));
       row.append(out, del);
-      memBox.append(row);
+      memWrap.append(row);
+
+      // 이 시설이 먹는 재료 (합체 후에도 어느 기계가 무엇을 못 받는지 보이게)
+      if (def.ins.length) {
+        const ins = el('div', 'm-ins');
+        for (const p of def.ins) {
+          const chip = el('span', 'need');
+          const amt = el('b');
+          chip.append(iconEl(p.item, 's'), amt);
+          chip.title = `${iname(p.item)} — ${fmtN(p.rate * Math.max(f.count, 1))}/분 소비`;
+          ins.append(chip);
+          onUpdate(() => {
+            amt.textContent = fmtN(cx.pool[p.item] || 0);
+            chip.classList.toggle('lack', f.lack === p.item);
+          });
+        }
+        memWrap.append(ins);
+      }
+      memBox.append(memWrap);
     }
     box.append(memBox);
 
@@ -1577,10 +1783,19 @@ function buildCanvas() {
       dot.dataset.cx = cx.id; dot.dataset.item = pin.item; dot.dataset.dir = 'in';
       portEls[cx.id + '|' + pin.item + '|in'] = dot;
       const pool = el('span', 'pool');
-      p.append(dot, iconEl(pin.item, 's'), el('span', 'rate', `${fmtN(pin.rate)}/분 부족`), pool);
-      p.title = iname(pin.item);
+      // 이 수치는 "설계상 밖에서 받아야 하는 양"이다. 지금 굶는 중일 때만 '부족'이라고 쓴다.
+      const rate = el('span', 'rate', `${fmtN(pin.rate)}/분 필요`);
+      p.append(dot, iconEl(pin.item, 's'), rate, pool);
       insCol.append(p);
-      onUpdate(() => { pool.textContent = fmtN(cx.pool[pin.item] || 0); });
+      onUpdate(() => {
+        const have = cx.pool[pin.item] || 0;
+        const starving = cx.members.some(f => f.lack === pin.item);
+        pool.textContent = fmtN(have);
+        rate.textContent = `${fmtN(pin.rate)}/분 ` + (starving ? '부족' : '필요');
+        p.classList.toggle('starving', starving);
+        p.title = `${iname(pin.item)} — 설계상 외부 반입 ${fmtN(pin.rate)}/분 필요 · 현재 보유 ${fmtN(have)}/${poolCap(cx)}`
+          + (starving ? '\n⚠ 지금 이 재료가 모자라 기계가 멈춰 있습니다' : '\n지금은 모자라지 않습니다');
+      });
     }
     for (const pout of ports.outs) {
       const p = el('div', 'port');
@@ -1589,9 +1804,16 @@ function buildCanvas() {
       portEls[cx.id + '|' + pout.item + '|out'] = dot;
       const pool = el('span', 'pool');
       p.append(dot, iconEl(pout.item, 's'), el('span', 'rate', `+${fmtN(pout.rate)}/분`), pool);
-      p.title = iname(pout.item);
       outsCol.append(p);
-      onUpdate(() => { pool.textContent = fmtN(cx.pool[pout.item] || 0); });
+      onUpdate(() => {
+        const have = cx.pool[pout.item] || 0;
+        const cap = poolCap(cx);
+        const jammed = cx.members.some(f => f.jam === pout.item) || have >= cap * 0.98;
+        pool.textContent = fmtN(have);
+        p.classList.toggle('jammed', jammed);
+        p.title = `${iname(pout.item)} — 설계상 잉여 ${fmtN(pout.rate)}/분 · 현재 보유 ${fmtN(have)}/${cap}`
+          + (jammed ? '\n⚠ 저장고가 가득해 생산이 막혔습니다 — 출하 시설을 합치거나 벨트로 내보내세요' : '');
+      });
     }
     pWrap.append(insCol, outsCol);
     box.append(pWrap);
@@ -1607,8 +1829,9 @@ function buildCanvas() {
 
     onUpdate(() => {
       // 단지 가동률 = 기계 수 가중 평균
-      let wsum = 0, esum = 0, worst = null;
+      let wsum = 0, esum = 0;
       let power = 0, produces = 0;
+      const lacks = new Set(), jams = new Set(), reasons = new Set();
       for (const f of cx.members) {
         const def = facDef(f);
         power += def.power * f.count;
@@ -1617,9 +1840,17 @@ function buildCanvas() {
         if (f.count > 0) {
           wsum += f.count;
           esum += (f.eff || 0) * f.count;
-          if (f.why && (worst === null)) worst = f.why;
+          if (f.lack) lacks.add(f.lack);
+          else if (f.jam) jams.add(f.jam);
+          else if (f.why) reasons.add(f.why);
         }
       }
+      // 같은 원인은 한 줄로 모아서 (기계마다 같은 말 반복하지 않게)
+      const worst = [
+        lacks.size ? '재료 부족: ' + [...lacks].map(iname).join(', ') : null,
+        jams.size ? '저장고 가득: ' + [...jams].map(iname).join(', ') + ' — 출하 시설을 합치거나 소비처를 늘리세요' : null,
+        ...reasons,
+      ].filter(Boolean).join(' · ') || null;
       const pct = wsum > 0 ? Math.round(esum / wsum * 100) : 0;
       eff.textContent = hasAwesink(cx) && cx.ptsRate ? `+${fmtN(cx.ptsRate)} P/분` : (wsum > 0 ? pct + '%' : '휴면');
       eff.style.color = pct >= 99 || wsum === 0 ? 'var(--good)' : 'var(--bad)';

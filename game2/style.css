@@ -10,6 +10,8 @@
   --b-roof: #b56a34;
   --b-dark: #26211a;
   --b-sky: #1d1a14;
+  /* 정체(막힘)는 부족(--bad)과 구분되는 색 — 굶는 것과 넘치는 것은 다른 문제다 */
+  --warn: #e0a33a;
 }
 
 /* 건물 일러스트 영역 */
@@ -126,6 +128,41 @@
   display: flex; gap: 8px; flex-wrap: wrap;
 }
 
+/* 필요 재료 줄 (줌 무관 항상 표시) */
+.cx-needs {
+  display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+  padding: 3px 9px 5px;
+  border-bottom: 1px dashed var(--border);
+}
+.cx-needs .nl { font-size: 9.5px; color: var(--muted); letter-spacing: .5px; }
+.need {
+  display: inline-flex; align-items: center; gap: 2px;
+  padding: 1px 4px; border-radius: 6px;
+  border: 1px solid var(--border); background: rgba(0, 0, 0, .2);
+  font-size: 10px; color: var(--muted);
+}
+.need b { font-weight: 700; color: var(--fg); }
+.need .icon-s { opacity: .95; }
+/* 외부 반입이 필요한 재료 */
+.need.ext { border-color: var(--accent-dim); }
+.need.ext b { color: var(--accent); }
+/* 지금 이 재료 때문에 멈춘 상태 */
+.need.lack {
+  border-color: var(--bad); background: rgba(200, 70, 60, .16);
+  animation: lackBlink 1.4s ease-in-out infinite;
+}
+.need.lack b { color: var(--bad); }
+@keyframes lackBlink { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
+/* 시설별 투입 재료 줄 */
+.mem-wrap { border-bottom: 1px solid rgba(58, 51, 42, .4); }
+.mem-wrap:last-child { border-bottom: none; }
+.m-ins {
+  display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+  padding: 0 9px 4px 22px;
+}
+.mem .up { padding: 0 5px; font-size: 10px; font-weight: 700; }
+
 /* 중간 줌: 내부 시설 아이콘 스트립 */
 .cx-strip {
   display: none;
@@ -144,11 +181,11 @@
 .mem {
   display: flex; align-items: center; gap: 5px;
   padding: 3px 9px;
-  border-bottom: 1px solid rgba(58, 51, 42, .4);
   font-size: 11.5px;
 }
-.mem:last-child { border-bottom: none; }
-.mem .m-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 시설 목록을 펼치면 버튼이 늘어나므로 카드를 넓혀 이름이 아이콘만 남지 않게 한다 */
+.cx.focused, .zoom-near .cx { max-width: 340px; }
+.mem .m-name { flex: 1; min-width: 76px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mem .m-eff { font-size: 10px; min-width: 30px; text-align: right; }
 .mem button { padding: 0 6px; font-size: 11px; }
 .mem .cnt { font-weight: 700; color: var(--accent); min-width: 18px; text-align: center; }
@@ -157,6 +194,27 @@
 .cx-ports { display: flex; justify-content: space-between; gap: 8px; padding: 5px 0; }
 .cx-ports .ports { max-width: 50%; }
 .cx-ports .port .pool { color: var(--muted); font-size: 10px; min-width: 22px; }
+/* 설계 수치(필요/잉여)는 조용히, 실제로 막힌 것만 눈에 띄게 */
+.cx-ports .port .rate { color: var(--muted); }
+.cx-ports .port.starving .rate { color: var(--bad); font-weight: 700; }
+.cx-ports .port.starving .pool { color: var(--bad); }
+.cx-ports .port.jammed .rate,
+.cx-ports .port.jammed .pool { color: var(--warn); font-weight: 700; }
+
+/* 벨트 메뉴 진단줄 — 긴 문장이 메뉴를 화면 밖으로 늘리지 않게 폭을 묶는다 */
+.edge-menu { max-width: 300px; }
+.edge-menu .em-diag {
+  font-size: 10.5px; line-height: 1.45;
+  white-space: normal; word-break: keep-all; overflow-wrap: anywhere;
+  padding: 4px 6px; margin: 2px 0 4px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: rgba(0, 0, 0, .25);
+  color: var(--muted);
+}
+.edge-menu .em-diag.hot {
+  border-color: var(--accent-dim); color: var(--accent);
+}
 
 .cx-foot {
   display: flex; align-items: center; gap: 6px;
