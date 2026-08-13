@@ -1,54 +1,99 @@
 /* game2 전용 — 기본 스타일은 ../game/style.css 를 상속 */
 
-/* ============ 업무 모드 (보스 키, F9) — ERP 현황판풍 라이트 테마 ============ */
-body.biz {
-  --bg: #f2f3f5;
-  --panel: #ffffff;
-  --panel2: #eef0f3;
-  --border: #c7cdd6;
-  --text: #24292f;
-  --muted: #68717d;
-  --accent: #2f5b96;
-  --accent-dim: #7189ab;
-  --good: #2e7d43;
-  --bad: #b04343;
-  --raw: #33639c;
-  --warn: #9c7c2a;
-  background: var(--bg);
-  color: var(--text);
-  font-family: "Malgun Gothic", "맑은 고딕", "Segoe UI", sans-serif;
+/* ============ 업무 모드 (보스 키, F9) — 가짜 엑셀 전체 화면 ============ */
+#excel {
+  position: fixed; inset: 0; z-index: 200;
+  display: none;
+  flex-direction: column;
+  background: #fff;
+  color: #212121;
+  font-family: "Malgun Gothic", "맑은 고딕", Calibri, sans-serif;
+  font-size: 12px;
+  cursor: default;
+  user-select: none;
 }
-/* 게임 느낌 제거: 애니메이션·그림자·둥근 모서리 최소화 */
-body.biz *, body.biz *::before, body.biz *::after {
-  animation: none !important;
-  transition: none !important;
-  box-shadow: none !important;
+body.biz #excel { display: flex; }
+
+.xl-title {
+  background: #217346; color: #fff;
+  display: flex; align-items: center;
+  padding: 4px 10px; font-size: 12px;
 }
-body.biz .panel, body.biz .cx, body.biz button, body.biz select, body.biz input,
-body.biz .edge-menu, body.biz .alt-card, body.biz #canvas-wrap {
-  border-radius: 2px !important;
+.xl-title .t { flex: 1; text-align: center; }
+.xl-title .win { letter-spacing: 6px; opacity: .9; }
+.xl-menu {
+  display: flex; gap: 2px;
+  background: #217346; color: #fff;
+  padding: 0 6px 0 2px; font-size: 12px;
 }
-/* 건물 일러스트 숨김 — 카드가 표 블록처럼 */
-body.biz .cx-visual { display: none !important; }
-body.biz .cx-head, body.biz .cx.power-plant .cx-head { border-radius: 0; background: #e7eaef; }
-/* 기본 버튼: 차분한 파랑 + 흰 글씨 */
-body.biz button:not(.ghost) { color: #fff; }
-/* 아이콘 무채색 */
-body.biz .icon, body.biz .icon-s { filter: grayscale(1) opacity(.8); }
-/* 캔버스: 밝은 모눈종이 */
-body.biz #canvas-wrap {
-  background:
-    linear-gradient(rgba(40, 60, 90, .06) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(40, 60, 90, .06) 1px, transparent 1px),
-    #fafbfc;
+.xl-menu span { padding: 5px 10px 7px; }
+.xl-menu span:hover { background: rgba(255, 255, 255, .15); }
+.xl-menu .active { background: #fff; color: #217346; }
+.xl-ribbon {
+  display: flex; align-items: center; gap: 14px;
+  background: #f5f6f7; border-bottom: 1px solid #d4d4d4;
+  padding: 6px 12px; color: #444; font-size: 11.5px;
+  white-space: nowrap; overflow: hidden;
 }
-/* 배너·선택 강조를 점잖게 */
-body.biz #banner { background: #eef4ea; border-color: var(--good); color: var(--good); }
-body.biz .hand-item:hover { background: #e9eef6; }
-body.biz .hand-item.sel { background: #dde6f2; color: var(--accent); }
-body.biz .need.lack { background: rgba(176, 67, 67, .08); }
-body.biz .cx.drop-target { border-color: var(--accent); }
-body.biz .cx.focused { border-color: var(--accent); }
+.xl-ribbon .grp { display: flex; align-items: center; gap: 6px; padding-right: 14px; border-right: 1px solid #ddd; }
+.xl-ribbon .box { border: 1px solid #c6c6c6; background: #fff; padding: 1px 7px; }
+.xl-formula {
+  display: flex; align-items: center;
+  border-bottom: 1px solid #d4d4d4;
+  background: #fff; font-size: 12px;
+}
+.xl-name {
+  width: 76px; padding: 3px 8px;
+  border-right: 1px solid #d4d4d4;
+  color: #333;
+}
+.xl-fx { padding: 3px 9px; color: #888; font-style: italic; border-right: 1px solid #d4d4d4; }
+.xl-fbar { flex: 1; padding: 3px 8px; color: #333; white-space: nowrap; overflow: hidden; }
+
+.xl-grid-wrap { flex: 1; overflow: auto; background: #fff; }
+.xl-grid { border-collapse: collapse; table-layout: fixed; width: max-content; }
+.xl-grid th {
+  background: #f3f3f3; color: #555; font-weight: normal;
+  border: 1px solid #d4d4d4;
+  padding: 1px 4px; font-size: 11.5px;
+  text-align: center;
+}
+.xl-grid th.rn { width: 34px; }
+.xl-grid td {
+  border: 1px solid #e2e2e2;
+  padding: 1px 6px;
+  width: 128px; max-width: 128px;
+  height: 19px;
+  overflow: hidden; white-space: nowrap;
+  background: #fff; color: #212121;
+  font-size: 12px;
+}
+.xl-grid td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.xl-grid td.hdr { background: #eef3ee; font-weight: 700; color: #1d5c38; }
+.xl-grid td.sel { outline: 2px solid #217346; outline-offset: -2px; }
+.xl-grid td.warncell { color: #b04343; }
+
+.xl-tabs {
+  display: flex; align-items: center; gap: 1px;
+  background: #f3f3f3; border-top: 1px solid #d4d4d4;
+  padding: 0 8px; font-size: 12px;
+}
+.xl-tabs .nav { color: #888; padding: 3px 6px; }
+.xl-tabs .tab {
+  padding: 3px 14px;
+  border: 1px solid #d4d4d4; border-top: none;
+  background: #f3f3f3; color: #444;
+}
+.xl-tabs .tab.active {
+  background: #fff; color: #217346; font-weight: 700;
+  border-bottom: 2px solid #217346;
+}
+.xl-tabs .tab:hover { background: #fff; }
+.xl-status {
+  display: flex; justify-content: space-between;
+  background: #217346; color: #fff;
+  padding: 2px 12px; font-size: 11.5px;
+}
 /* ============ 업무 모드 끝 ============ */
 
 /* v1의 #node-layer { pointer-events:none } 상속 복구 — .cx 카드는 이벤트를 받아야 함 */

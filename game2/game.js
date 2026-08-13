@@ -1176,6 +1176,199 @@ function openPlanner() {
   renderPlan();
 }
 
+/* ---------- 업무 모드: 가짜 엑셀 (게임 데이터가 실시간 시트로 표시) ---------- */
+const XL_COLS = 8, XL_ROWS = 38;
+let xlSheet = '설비현황';
+let xlCells = null; // [row][col] td
+let xlSelected = null;
+let xlName = null, xlFbar = null;
+
+function buildExcel() {
+  const root = el('div');
+  root.id = 'excel';
+
+  const title = el('div', 'xl-title');
+  title.append(el('span', null, '자동 저장 ●'), el('span', 't', '생산현황_분기보고.xlsx - Excel'), el('span', 'win', '— ⬜ ✕'));
+  root.append(title);
+
+  const menu = el('div', 'xl-menu');
+  for (const m of ['파일', '홈', '삽입', '페이지 레이아웃', '수식', '데이터', '검토', '보기']) {
+    const it = el('span', m === '홈' ? 'active' : null, m);
+    if (m === '보기') {
+      it.title = '게임 화면으로 (F9)';
+      it.addEventListener('click', () => { state.biz = false; applyBiz(); save(); });
+    }
+    menu.append(it);
+  }
+  root.append(menu);
+
+  const ribbon = el('div', 'xl-ribbon');
+  const grp1 = el('span', 'grp', '📋 붙여넣기');
+  const grp2 = el('span', 'grp');
+  grp2.append(el('span', 'box', '맑은 고딕'), el('span', 'box', '11'), el('span', null, '가 가 가'));
+  const grp3 = el('span', 'grp', '≡ ≡ ≡  병합하고 가운데 맞춤');
+  const grp4 = el('span', 'grp', '표준 ▾  ％ 🔗  ,  .00');
+  const grp5 = el('span', 'grp', '조건부 서식 ▾  표 서식 ▾  셀 스타일 ▾');
+  ribbon.append(grp1, grp2, grp3, grp4, grp5, el('span', null, 'Σ 자동 합계  ▾ 정렬 및 필터'));
+  root.append(ribbon);
+
+  const fbarWrap = el('div', 'xl-formula');
+  xlName = el('div', 'xl-name', 'A1');
+  xlFbar = el('div', 'xl-fbar', '');
+  fbarWrap.append(xlName, el('div', 'xl-fx', 'fx'), xlFbar);
+  root.append(fbarWrap);
+
+  const wrap = el('div', 'xl-grid-wrap');
+  const table = el('table', 'xl-grid');
+  const hrow = el('tr');
+  hrow.append(el('th', 'rn', ''));
+  for (let c = 0; c < XL_COLS; c++) hrow.append(el('th', null, String.fromCharCode(65 + c)));
+  table.append(hrow);
+  xlCells = [];
+  for (let r = 0; r < XL_ROWS; r++) {
+    const tr = el('tr');
+    tr.append(el('th', 'rn', r + 1));
+    const rowCells = [];
+    for (let c = 0; c < XL_COLS; c++) {
+      const td = el('td');
+      td.addEventListener('click', () => {
+        if (xlSelected) xlSelected.classList.remove('sel');
+        xlSelected = td;
+        td.classList.add('sel');
+        xlName.textContent = String.fromCharCode(65 + c) + (r + 1);
+        xlFbar.textContent = td.textContent;
+      });
+      tr.append(td);
+      rowCells.push(td);
+    }
+    table.append(tr);
+    xlCells.push(rowCells);
+  }
+  wrap.append(table);
+  root.append(wrap);
+
+  const tabs = el('div', 'xl-tabs');
+  tabs.append(el('span', 'nav', '◀ ▶'));
+  for (const name of ['설비현황', '재고', '생산실적']) {
+    const t = el('span', 'tab' + (name === xlSheet ? ' active' : ''), name);
+    t.addEventListener('click', () => {
+      xlSheet = name;
+      for (const x of tabs.querySelectorAll('.tab')) x.classList.toggle('active', x.textContent === name);
+      refreshExcel();
+    });
+    tabs.append(t);
+  }
+  tabs.append(el('span', 'nav', '＋'));
+  root.append(tabs);
+
+  const status = el('div', 'xl-status');
+  status.append(el('span', null, '준비'), el('span', 'xl-agg', ''), el('span', null, '🔳 ▦ ▤  ─── 100% ＋'));
+  root.append(status);
+
+  document.body.append(root);
+}
+
+/** 현재 시트의 데이터 행 계산 */
+function excelRows() {
+  const rows = [];
+  if (xlSheet === '설비현황') {
+    rows.push(['구분', '설비명', '순도/클럭', '대수', '가동률', '소요전력(MW)', '비고', '']);
+    for (const cx of state.cx) {
+      const idn = cxIdentity(cx).name.replace(/[⚡🏭📦⛏]/g, '').trim();
+      let first = true;
+      for (const f of cx.members) {
+        const def = facDef(f);
+        const isProd = f.type === 'miner' || f.type === 'machine' || f.type === 'gen';
+        rows.push([
+          first ? idn : '',
+          def.label.replace(/[★⚡]/g, '').trim(),
+          f.type === 'miner' && f.purity ? PURITY[f.purity].ko + ' / ' + clockOf(f) + '%'
+            : isProd ? clockOf(f) + '%' : '-',
+          isProd ? f.count : '-',
+          isProd && f.count > 0 ? Math.round((f.eff || 0) * 100) + '%' : '-',
+          isProd ? Math.round(def.power * f.count * 10) / 10 : '-',
+          f.why || (f.type === 'sink' ? '잉여 반출' : f.type === 'awesink' ? '포인트 전환' : ''),
+          '',
+        ]);
+        first = false;
+      }
+    }
+    rows.push(['', '', '', '', '', '', '', '']);
+    rows.push(['합계', '', '', '', '', Math.round(lastPower.demand * 10) / 10, `공급 ${Math.round(lastPower.supply)}`, '']);
+  } else if (xlSheet === '재고') {
+    rows.push(['품목코드', '품목명', '현재고', '입출고(/분)', '', '항목', '값', '']);
+    const items = visibleStock();
+    const meta = [
+      ['전력 공급(MW)', Math.round(lastPower.supply)],
+      ['전력 수요(MW)', Math.round(lastPower.demand * 10) / 10],
+      ['보유 쿠폰', state.coupons],
+      ['싱크 포인트', Math.round(state.sinkPts)],
+      ['달성 마일스톤', state.ms + ' / ' + MS.length],
+    ];
+    for (let i = 0; i < Math.max(items.length, meta.length); i++) {
+      const cn = items[i];
+      rows.push([
+        cn ? 'ITM-' + String(i + 1).padStart(3, '0') : '',
+        cn ? iname(cn) : '',
+        cn ? Math.floor(stockOf(cn)).toLocaleString() : '',
+        cn ? fmtRate(lastRates[cn] || 0) : '',
+        '',
+        meta[i] ? meta[i][0] : '',
+        meta[i] ? meta[i][1] : '',
+        '',
+      ]);
+    }
+  } else {
+    rows.push(['품목명', '생산(/분)', '소비(/분)', '순증(/분)', '', '', '', '']);
+    const prod = {}, cons = {};
+    for (const cx of state.cx) {
+      for (const f of cx.members) {
+        const def = facDef(f);
+        const run = f.count * (f.eff || 0);
+        for (const p of def.outs) prod[p.item] = (prod[p.item] || 0) + p.rate * run;
+        for (const p of def.ins) cons[p.item] = (cons[p.item] || 0) + p.rate * run;
+      }
+    }
+    const all = [...new Set([...Object.keys(prod), ...Object.keys(cons)])]
+      .sort((a, b) => (prod[b] || 0) - (prod[a] || 0));
+    for (const cn of all) {
+      const p = prod[cn] || 0, c = cons[cn] || 0;
+      rows.push([iname(cn), fmtN(p), fmtN(c), fmtN(p - c), '', '', '', '']);
+    }
+  }
+  return rows;
+}
+
+function applyBiz() {
+  document.body.classList.toggle('biz', !!state.biz);
+  const bizBtn = $('btn-biz');
+  if (bizBtn) bizBtn.textContent = state.biz ? '게임 모드' : '업무 모드 (F9)';
+  document.title = state.biz ? '생산현황_분기보고.xlsx - Excel' : 'Satisfactory 공장 단지';
+  if (state.biz) refreshExcel();
+}
+
+function refreshExcel() {
+  if (!state.biz || !xlCells) return;
+  const rows = excelRows();
+  let vSum = 0, vCnt = 0;
+  for (let r = 0; r < XL_ROWS; r++) {
+    for (let c = 0; c < XL_COLS; c++) {
+      const td = xlCells[r][c];
+      const v = rows[r] ? (rows[r][c] ?? '') : '';
+      const s = String(v);
+      if (td.textContent !== s) td.textContent = s;
+      const isNum = s !== '' && /^[-+]?[\d,.]+%?$/.test(s);
+      td.classList.toggle('num', isNum);
+      td.classList.toggle('hdr', r === 0 && s !== '');
+      td.classList.toggle('warncell', c === 6 && s !== '' && !/^(공급|잉여|포인트)/.test(s) && r !== 0 && xlSheet === '설비현황');
+      if (isNum) { vCnt++; vSum += parseFloat(s.replace(/[,%]/g, '')) || 0; }
+    }
+  }
+  const agg = document.querySelector('.xl-agg');
+  if (agg) agg.textContent = `평균: ${vCnt ? fmtN(vSum / vCnt) : 0}  개수: ${vCnt}  합계: ${fmtN(vSum)}`;
+  if (xlSelected) xlFbar.textContent = xlSelected.textContent;
+}
+
 /* --- 시작 가이드 --- */
 const TUT_STEPS = [
   { text: '수동 채집에서 철 광석을 캐세요 (10개)', done: () => stockOf('Desc_OreIron_C') >= 10 },
@@ -2167,6 +2360,7 @@ function rebuild() {
   buildPower();
 }
 function update() {
+  if (state.biz) { refreshExcel(); return; } // 업무 모드 중엔 시트만 갱신 (게임 UI는 덮여 있음)
   if (!drag.mode && visibleStock().join(',') !== stockKeys) { rebuild(); return; }
   for (const fn of updaters) fn();
 }
@@ -2191,24 +2385,16 @@ function init() {
   muteBtn.addEventListener('click', () => { state.muted = !state.muted; refreshMute(); save(); });
   refreshMute();
 
-  // 업무 모드 (보스 키): ERP 현황판처럼 보이는 라이트 테마, F9 로 즉시 전환
-  const bizBtn = $('btn-biz');
-  const applyBiz = () => {
-    document.body.classList.toggle('biz', !!state.biz);
-    bizBtn.textContent = state.biz ? '게임 모드' : '업무 모드';
-    document.title = state.biz ? '생산관리 시스템 — 설비·재고 현황' : 'Satisfactory 공장 단지';
-    const h1 = document.querySelector('header h1');
-    const sub = document.querySelector('header .sub');
-    if (h1) h1.textContent = state.biz ? '생산관리 시스템' : '🏙 Satisfactory 공장 단지';
-    if (sub) {
-      sub.textContent = state.biz
-        ? '설비 · 재고 · 전력 관리 현황판'
-        : '시설을 겹쳐 단지로 합치는 실험판 — 내부 물류는 자동, 줌으로 들여다보기';
-    }
-  };
-  bizBtn.addEventListener('click', () => { state.biz = !state.biz; applyBiz(); save(); });
+  // 업무 모드 (보스 키): 가짜 엑셀 전체 화면, F9 로 즉시 전환 (엑셀 안 Esc 도 복귀)
+  buildExcel();
+  $('btn-biz').addEventListener('click', () => { state.biz = !state.biz; applyBiz(); save(); });
   document.addEventListener('keydown', e => {
-    if (e.key === 'F9') { e.preventDefault(); state.biz = !state.biz; applyBiz(); save(); }
+    if (e.key === 'F9' || (e.key === 'Escape' && state.biz)) {
+      e.preventDefault();
+      state.biz = !state.biz;
+      applyBiz();
+      save();
+    }
   });
   applyBiz();
 
