@@ -270,6 +270,23 @@ body.biz #excel { display: flex; }
 .need.short b { color: var(--bad); }
 .m-build .nl { font-size: 9.5px; color: var(--accent); letter-spacing: .5px; }
 
+/* 납품 계약 · 연구 */
+.contract {
+  padding: 8px 0;
+  border-bottom: 1px dashed var(--border);
+  display: flex; flex-direction: column; gap: 5px;
+}
+.contract:last-child { border-bottom: none; }
+.ct-reward { font-weight: 700; color: var(--accent); font-size: 12.5px; }
+.research-row {
+  display: flex; align-items: center; gap: 8px;
+  padding: 5px 0;
+  border-bottom: 1px dashed var(--border);
+}
+.research-row:last-child { border-bottom: none; }
+.research-row .grow { flex: 1; min-width: 0; }
+.research-row .r-name { font-weight: 600; font-size: 12.5px; }
+
 /* 시설별 투입 재료 줄 */
 .mem-wrap { border-bottom: 1px solid rgba(58, 51, 42, .4); }
 .mem-wrap:last-child { border-bottom: none; }

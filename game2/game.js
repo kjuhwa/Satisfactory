@@ -70,10 +70,27 @@ const clockOf = f => f.clock || 100;
 const shardsFor = clock => Math.max(0, Math.ceil((clock - 100) / 50));
 const lockedAlts = () => D.recipes.filter(r => r.alt && !state.altUnlocked.includes(r.id));
 
+/* 연구 트리: 쿠폰으로 영구 강화 (계약 → 쿠폰 → 연구 순환) */
+const RESEARCH = {
+  mine:    { name: '채굴 효율',      max: 5, base: 4,  fx: l => `채굴 속도 +${l * 10}%` },
+  craft:   { name: '제조 속도',      max: 5, base: 4,  fx: l => `기계 속도 +${l * 10}% (전력 불변)` },
+  power:   { name: '발전 효율',      max: 3, base: 4,  fx: l => `발전량 +${l * 10}%` },
+  store:   { name: '저장고 확장',    max: 3, base: 3,  fx: l => `단지 저장고 +${l * 50}%` },
+  belt:    { name: '벨트 정비',      max: 3, base: 3,  fx: l => `벨트 용량 +${l * 20}%` },
+  offline: { name: '오프라인 연장',  max: 2, base: 6,  fx: l => `오프라인 진행 ${4 + l * 4}시간` },
+  slot:    { name: '계약 슬롯',      max: 2, base: 10, fx: l => `동시 계약 ${3 + l}건` },
+  reward:  { name: '계약 보상 협상', max: 2, base: 6,  fx: l => `계약 쿠폰 보상 +${l * 25}%` },
+};
+const rlv = k => (state.research && state.research[k]) || 0;
+const researchCost = k => RESEARCH[k].base * Math.pow(2, rlv(k));
+const genPowerOf = g => g.power * (1 + 0.1 * rlv('power'));
+const beltCap = e => Math.round(beltOf(e).cap * (1 + 0.2 * rlv('belt')));
+
 function depositsLeft(resource, purity) {
   const pool = DEPOSITS[resource];
   if (!pool) return Infinity;
-  const total = pool[purity] || 0;
+  const bonus = (state.bonusDeposits && state.bonusDeposits[resource] && state.bonusDeposits[resource][purity]) || 0;
+  const total = (pool[purity] || 0) + bonus; // 계약 보상 '탐사권'으로 늘어난 매장지
   let used = 0;
   for (const cx of state.cx) {
     for (const f of cx.members) {
@@ -148,6 +165,10 @@ function freshState() {
     coupons: 0,
     couponsPrinted: 0,
     altUnlocked: [],
+    contracts: [],
+    research: {},
+    bonusDeposits: {},
+    speed: 1,
     zoom: 1,
     savedAt: Date.now(),
   };
@@ -157,6 +178,9 @@ function withDefaults(s) {
   s.sinkPts ??= 0; s.coupons ??= 0; s.couponsPrinted ??= 0;
   s.altUnlocked ??= [];
   s.speed ??= 1;
+  s.contracts ??= [];
+  s.research ??= {};
+  s.bonusDeposits ??= {};
   s.won = s.ms >= MS.length;
   if (s.ms >= 7 && !s.gensUnlocked.includes('nuclear')) s.gensUnlocked.push('nuclear');
   for (const cx of s.cx) { cx.pool ??= {}; cx.members ??= []; }
@@ -191,7 +215,7 @@ const cxById = id => state.cx.find(c => c.id === id);
 function facDef(f) {
   if (f.type === 'miner') {
     const def = EXT[f.resource] || MINERS[f.tier || 1];
-    const mult = PURITY[f.purity || 'normal'].mult;
+    const mult = PURITY[f.purity || 'normal'].mult * (1 + 0.1 * rlv('mine'));
     const c = clockOf(f) / 100;
     return {
       label: (def.label || D.xnames[def.build]) + ' — ' + iname(f.resource),
@@ -203,13 +227,13 @@ function facDef(f) {
   }
   if (f.type === 'machine') {
     const r = recipeById[f.recipeId];
-    const c = clockOf(f) / 100;
+    const c = clockOf(f) / 100 * (1 + 0.1 * rlv('craft'));
     return {
       label: (r.alt ? '★ ' : '') + r.ko,
       iconCn: r.out[0][0],
       ins: r.in.map(([cn, amt]) => ({ item: cn, rate: perMin(r, amt) * c })),
       outs: r.out.map(([cn, amt]) => ({ item: cn, rate: perMin(r, amt) * c })),
-      power: linePower(r) * Math.pow(c, POWER_EXP),
+      power: linePower(r) * Math.pow(clockOf(f) / 100, POWER_EXP),
       cost: buildCost(r.machine),
     };
   }
@@ -220,7 +244,7 @@ function facDef(f) {
       iconCn: g.build,
       ins: g.burns.map(([cn, rate]) => ({ item: cn, rate })),
       outs: (g.wastes || []).map(([cn, rate]) => ({ item: cn, rate })),
-      power: 0, produces: g.power,
+      power: 0, produces: genPowerOf(g),
       cost: buildCost(g.build),
     };
   }
@@ -447,7 +471,7 @@ function itemDepth(item, path) {
   return d;
 }
 
-const poolCap = cx => 100 * Math.max(2, cx.members.length);
+const poolCap = cx => 100 * Math.max(2, cx.members.length) * (1 + 0.5 * rlv('store'));
 
 function tick(dtMin) {
   const prev = { ...state.stock };
@@ -478,7 +502,7 @@ function tick(dtMin) {
       frac = Math.min(1, Math.max(0, frac));
       for (const [cn, rate] of g.burns) cx.pool[cn] = Math.max(0, (cx.pool[cn] || 0) - rate * f.count * dtMin * frac);
       for (const [cn, rate] of (g.wastes || [])) cx.pool[cn] = (cx.pool[cn] || 0) + rate * f.count * dtMin * frac;
-      supply += g.power * f.count * frac;
+      supply += genPowerOf(g) * f.count * frac;
       f.eff = frac;
       f.why = frac >= 0.99 || !limit ? null
         : limitKind === 'in' ? `연료 부족: ${iname(limit)}` : `폐기물 정체: ${iname(limit)}`;
@@ -508,7 +532,7 @@ function tick(dtMin) {
       const dst = cxById(e.to.cx);
       if (!dst) continue;
       const space = poolCap(dst) - (dst.pool[item] || 0);
-      const moved = Math.min(share, beltOf(e).cap * dtMin, Math.max(0, space));
+      const moved = Math.min(share, beltCap(e) * dtMin, Math.max(0, space));
       dst.pool[item] = (dst.pool[item] || 0) + moved;
       from.pool[item] -= moved;
       lastEdgeFlow[e.id] = moved / dtMin;
@@ -606,6 +630,22 @@ function tick(dtMin) {
         }
       }
       cx.ptsRate = rate;
+    }
+  }
+
+  // 계약 기한 (게임 시간 기준 — 배속에 같이 흐름)
+  if (Array.isArray(state.contracts)) {
+    let expired = false;
+    for (const c of state.contracts) c.left -= dtMin;
+    state.contracts = state.contracts.filter(c => {
+      if (c.left > 0) return true;
+      expired = true;
+      return false;
+    });
+    if (expired) {
+      ensureContracts();
+      showBanner('⌛ 기한이 지난 계약이 회수되고 새 계약이 게시되었습니다.', 4000);
+      contractsDirty = true;
     }
   }
 
@@ -915,6 +955,199 @@ function openAltChoice() {
   }
   overlay.append(card);
   document.body.append(overlay);
+}
+
+/* --- 납품 계약 --- */
+let contractsDirty = false; // 만료 등으로 패널 재구성 필요
+
+let ctPoolCache = { sig: '', items: [] };
+/** 현재 해금 상태에서 원자재까지 전부 생산 가능한 품목만 (이행 불가 계약 방지) */
+function contractPool() {
+  const sig = [state.ms, state.machines.length, state.altUnlocked.length, state.raws.length].join('|');
+  if (ctPoolCache.sig === sig) return ctPoolCache.items;
+  const items = Object.keys(D.items).filter(cn => {
+    if (ptsOf(cn) <= 0 || !planPick(cn)) return false;
+    const plan = computePlan(cn, 1);
+    if (!plan.recipes.length || Object.keys(plan.external).length) return false;
+    return Object.keys(plan.raws).every(rw => state.raws.includes(rw));
+  });
+  ctPoolCache = { sig, items };
+  return items;
+}
+
+function genContract() {
+  const pool = contractPool();
+  const maxItems = state.ms >= 5 ? 3 : 2;
+  const n = Math.min(1 + Math.floor(Math.random() * maxItems), Math.max(1, pool.length));
+  const items = [];
+  const chosen = new Set();
+  let guard = 0;
+  while (items.length < n && guard++ < 60) {
+    const cn = pool[Math.floor(Math.random() * pool.length)];
+    if (chosen.has(cn)) continue;
+    chosen.add(cn);
+    const r = planPick(cn);
+    const opm = perMin(r, r.out.find(o => o[0] === cn)[1]);
+    // 기계 1대 기준 3~8분 분량, 상한 500
+    const qty = Math.min(500, Math.max(10, Math.round(opm * (3 + Math.random() * 5) / 5) * 5));
+    items.push({ item: cn, qty, delivered: 0 });
+  }
+  const depth = Math.max(1, ...items.map(i => itemDepth(i.item)));
+  const reward = {
+    coupons: Math.round((2 + items.length * 2 + depth * 1.5) * (1 + 0.25 * rlv('reward'))),
+  };
+  const roll = Math.random();
+  if (roll < 0.18) reward.shards = 1 + Math.floor(Math.random() * 2);
+  else if (roll < 0.32) {
+    const ores = state.raws.filter(cn => DEPOSITS[cn]);
+    if (ores.length) {
+      const res = ores[Math.floor(Math.random() * ores.length)];
+      const ps = Object.keys(DEPOSITS[res]);
+      reward.deposit = { res, purity: ps[Math.floor(Math.random() * ps.length)] };
+    }
+  }
+  const time = 25 + items.length * 10;
+  return { id: state.seq++, items, total: time, left: time, reward };
+}
+
+function contractSlots() { return 3 + rlv('slot'); }
+function ensureContracts() {
+  if (state.ms < 1) return;
+  while (state.contracts.length < contractSlots()) state.contracts.push(genContract());
+}
+
+function rewardText(rw) {
+  let s = `🎟 쿠폰 ${rw.coupons}장`;
+  if (rw.shards) s += ` + 동력 조각 ${rw.shards}`;
+  if (rw.deposit) s += ` + 탐사권(새 매장지)`;
+  return s;
+}
+
+function deliverContract(id) {
+  const c = state.contracts.find(x => x.id === id);
+  if (!c) return;
+  let moved = 0;
+  for (const it of c.items) {
+    const take = Math.min(stockOf(it.item), it.qty - it.delivered);
+    if (take > 0) { addStock(it.item, -take); it.delivered += take; moved += take; }
+  }
+  if (c.items.every(it => it.delivered >= it.qty - 1e-9)) {
+    state.coupons += c.reward.coupons;
+    if (c.reward.shards) addStock(SHARD, c.reward.shards);
+    let extra = '';
+    if (c.reward.deposit) {
+      const { res, purity } = c.reward.deposit;
+      state.bonusDeposits[res] ??= {};
+      state.bonusDeposits[res][purity] = (state.bonusDeposits[res][purity] || 0) + 1;
+      extra = ` · 🗺 새 매장지 발견: ${iname(res)} (${PURITY[purity].ko}) +1`;
+    }
+    state.contracts = state.contracts.filter(x => x.id !== id);
+    ensureContracts();
+    sfx('milestone');
+    showBanner(`📦 계약 납품 완료! ${rewardText(c.reward)}${extra}`, 5000);
+    save();
+    rebuild();
+  } else if (moved > 0) {
+    save();
+    update();
+  }
+}
+
+function abandonContract(id) {
+  state.contracts = state.contracts.filter(x => x.id !== id);
+  ensureContracts();
+  save();
+  rebuild();
+}
+
+function buildContracts() {
+  const panel = $('contract-panel');
+  const show = state.ms >= 1;
+  panel.hidden = !show;
+  if (!show) return;
+  ensureContracts();
+  contractsDirty = false;
+  const box = $('contract-body');
+  box.textContent = '';
+  for (const c of state.contracts) {
+    const row = el('div', 'contract');
+    row.append(el('div', 'ct-reward', rewardText(c.reward)));
+    const chipsBox = el('div', 'chips');
+    const chips = c.items.map(it => {
+      const chip = el('span', 'need');
+      const val = el('b');
+      chip.append(iconEl(it.item, 's'), el('span', null, iname(it.item)), val);
+      makeCraftLink(chip, it.item);
+      chipsBox.append(chip);
+      return { it, chip, val };
+    });
+    row.append(chipsBox);
+    const bar = el('div', 'ms-bar');
+    const fill = el('div');
+    bar.append(fill);
+    const timeTxt = el('div', 'hint');
+    row.append(bar, timeTxt);
+    const btns = el('div', 'btn-wrap');
+    const dv = el('button', 'mini', '납품');
+    dv.addEventListener('click', () => deliverContract(c.id));
+    const ab = el('button', 'mini ghost danger', '포기 ↻');
+    ab.title = '계약을 버리고 새 계약을 받습니다';
+    ab.addEventListener('click', () => abandonContract(c.id));
+    btns.append(dv, ab);
+    row.append(btns);
+    box.append(row);
+    onUpdate(() => {
+      for (const { it, chip, val } of chips) {
+        val.textContent = `${fmtN(it.delivered)}/${it.qty}`;
+        const done = it.delivered >= it.qty - 1e-9;
+        chip.classList.toggle('ok', done);
+        chip.classList.toggle('no', !done && stockOf(it.item) < 1);
+        chip.title = `${iname(it.item)} — 재고 ${fmtN(stockOf(it.item))}` + (chip.classList.contains('craft') ? ' · 클릭: 수동 제작' : '');
+      }
+      fill.style.width = Math.max(0, Math.min(100, c.left / c.total * 100)) + '%';
+      timeTxt.textContent = `남은 시간 ${fmtN(Math.max(0, c.left))}분 (게임 시간)`;
+      dv.disabled = !c.items.some(it => it.delivered < it.qty && stockOf(it.item) >= 1);
+    });
+  }
+  onUpdate(() => { if (contractsDirty) { rebuild(); } });
+}
+
+/* --- 연구 --- */
+function buildResearch() {
+  const panel = $('research-panel');
+  const show = state.ms >= 2;
+  panel.hidden = !show;
+  if (!show) return;
+  const box = $('research-body');
+  box.textContent = '';
+  for (const [key, def] of Object.entries(RESEARCH)) {
+    const row = el('div', 'research-row');
+    const grow = el('div', 'grow');
+    const name = el('div', 'r-name');
+    const desc = el('div', 'hint');
+    grow.append(name, desc);
+    const btn = el('button', 'mini');
+    btn.addEventListener('click', () => {
+      const cost = researchCost(key);
+      if (rlv(key) >= def.max || state.coupons < cost) return;
+      state.coupons -= cost;
+      state.research[key] = rlv(key) + 1;
+      sfx('unlock');
+      save();
+      rebuild();
+    });
+    row.append(grow, btn);
+    box.append(row);
+    onUpdate(() => {
+      const lv = rlv(key);
+      name.textContent = `${def.name}  ${lv}/${def.max}`;
+      desc.textContent = lv >= def.max
+        ? '최대 — ' + def.fx(lv)
+        : (lv > 0 ? `현재 ${def.fx(lv)} → ` : '') + `다음: ${def.fx(lv + 1)}`;
+      btn.textContent = lv >= def.max ? '완료' : `🎟 ${researchCost(key)}`;
+      btn.disabled = lv >= def.max || state.coupons < researchCost(key);
+    });
+  }
 }
 
 /* --- 재고 --- */
@@ -1496,6 +1729,10 @@ function excelRows() {
       ['보유 쿠폰', state.coupons],
       ['싱크 포인트', Math.round(state.sinkPts)],
       ['달성 마일스톤', state.ms + ' / ' + MS.length],
+      ...state.contracts.map((c, i) => [
+        `계약${i + 1} (${fmtN(Math.max(0, c.left))}분)`,
+        c.items.map(it => `${iname(it.item)} ${fmtN(it.delivered)}/${it.qty}`).join(', '),
+      ]),
     ];
     for (let i = 0; i < Math.max(items.length, meta.length); i++) {
       const cn = items[i];
@@ -1675,7 +1912,7 @@ function upgradeEdge(id) {
  * 흐름이 용량보다 낮다면 원인은 벨트가 아니라 상류 공급이나 하류 수요다.
  */
 function edgeDiag(e) {
-  const cap = beltOf(e).cap;
+  const cap = beltCap(e);
   const flow = lastEdgeFlow[e.id] || 0;
   const src = cxById(e.from.cx), dst = cxById(e.to.cx);
   const srcPool = src ? (src.pool[e.from.item] || 0) : 0;
@@ -1706,13 +1943,13 @@ function openEdgeMenu(ev, edgeId) {
   const head = el('div', 'em-head');
   head.append(iconEl(e.from.item, 's'), ` ${iname(e.from.item)} `, el('b', null, `Mk.${t}`));
   menu.append(head);
-  menu.append(el('div', 'em-line', `용량 ${beltOf(e).cap}/분 · 현재 흐름 ${fmtN(lastEdgeFlow[e.id] || 0)}/분`));
+  menu.append(el('div', 'em-line', `용량 ${beltCap(e)}/분 · 현재 흐름 ${fmtN(lastEdgeFlow[e.id] || 0)}/분`));
   const diag = edgeDiag(e);
   menu.append(el('div', 'em-diag' + (diag.bottleneck ? ' hot' : ''), (diag.bottleneck ? '⚠ ' : 'ℹ ') + diag.text));
   if (t < 5) {
     const next = BELT_TIERS[t + 1];
     // 병목이 아닐 때 업그레이드는 효과가 없으므로 강조하지 않는다
-    const up = el('button', diag.bottleneck ? null : 'ghost', `Mk.${t + 1} 업그레이드 (${next.cap}/분)`);
+    const up = el('button', diag.bottleneck ? null : 'ghost', `Mk.${t + 1} 업그레이드 (${Math.round(next.cap * (1 + 0.2 * rlv('belt')))}/분)`);
     up.disabled = !canAfford(next.cost);
     up.addEventListener('click', () => { upgradeEdge(edgeId); closeEdgeMenu(); });
     menu.append(up);
@@ -2392,7 +2629,7 @@ function buildCanvas() {
     hit.classList.add('edge-hit');
     hit.dataset.id = e.id;
     const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
-    title.textContent = `${iname(e.from.item)} · Mk.${tier} ${beltOf(e).cap}/분 (클릭: 업그레이드/삭제)`;
+    title.textContent = `${iname(e.from.item)} · Mk.${tier} ${beltCap(e)}/분 (클릭: 업그레이드/삭제)`;
     hit.append(title);
     hit.addEventListener('click', ev => openEdgeMenu(ev, e.id));
     hit.addEventListener('pointerenter', () => path.classList.add('hover'));
@@ -2552,9 +2789,11 @@ function rebuild() {
   updaters = [];
   buildTutorial();
   buildMilestone();
+  buildContracts();
   buildGather();
   buildHand();
   buildShop();
+  buildResearch();
   buildFactoryBar();
   buildCanvas();
   buildStock();
@@ -2570,7 +2809,8 @@ function update() {
 function init() {
   state = load() || freshState();
 
-  const elapsedSec = Math.min(4 * 3600, (Date.now() - (state.savedAt || Date.now())) / 1000);
+  const offlineCap = (4 + 4 * rlv('offline')) * 3600; // 연구로 연장
+  const elapsedSec = Math.min(offlineCap, (Date.now() - (state.savedAt || Date.now())) / 1000);
   if (elapsedSec > 10) {
     const steps = Math.floor(elapsedSec / 5);
     for (let i = 0; i < steps; i++) tick(5 / 60);
