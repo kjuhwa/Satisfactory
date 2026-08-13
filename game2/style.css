@@ -72,6 +72,18 @@ body.biz #excel { display: flex; }
 .xl-grid td.hdr { background: #eef3ee; font-weight: 700; color: #1d5c38; }
 .xl-grid td.sel { outline: 2px solid #217346; outline-offset: -2px; }
 .xl-grid td.warncell { color: #b04343; }
+/* 편집 가능 셀: 엑셀 '입력 셀' 관례(연노랑) */
+.xl-grid td.edit { background: #fff9db; cursor: text; }
+.xl-grid td.xl-btn { text-align: center; font-weight: 700; color: #217346; cursor: pointer; }
+.xl-grid td.xl-btn:hover { background: #eef7f0; }
+.xl-edit {
+  width: 100%; border: none; outline: none; background: #fff;
+  font: inherit; padding: 0;
+}
+.xl-cellsel {
+  width: 100%; border: none; background: transparent;
+  font: inherit; color: #212121; padding: 0;
+}
 
 .xl-tabs {
   display: flex; align-items: center; gap: 1px;

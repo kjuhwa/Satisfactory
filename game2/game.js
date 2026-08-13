@@ -1180,8 +1180,19 @@ function openPlanner() {
 const XL_COLS = 8, XL_ROWS = 38;
 let xlSheet = '설비현황';
 let xlCells = null; // [row][col] td
+let xlMeta = null;  // [row][col] 편집 메타 ({t:'count'|'clock', cxId, fid})
 let xlSelected = null;
+let xlEditing = null; // {td, input, meta}
+let xlFormBuilt = false;
 let xlName = null, xlFbar = null;
+let xlStatusEl = null, xlStatusTimer = null;
+
+function xlStatus(msg) {
+  if (!xlStatusEl) return;
+  xlStatusEl.textContent = msg;
+  clearTimeout(xlStatusTimer);
+  xlStatusTimer = setTimeout(() => { xlStatusEl.textContent = '준비'; }, 3500);
+}
 
 function buildExcel() {
   const root = el('div');
@@ -1225,34 +1236,44 @@ function buildExcel() {
   for (let c = 0; c < XL_COLS; c++) hrow.append(el('th', null, String.fromCharCode(65 + c)));
   table.append(hrow);
   xlCells = [];
+  xlMeta = [];
   for (let r = 0; r < XL_ROWS; r++) {
     const tr = el('tr');
     tr.append(el('th', 'rn', r + 1));
     const rowCells = [];
+    const rowMeta = [];
     for (let c = 0; c < XL_COLS; c++) {
       const td = el('td');
       td.addEventListener('click', () => {
+        if (xlEditing) return;
         if (xlSelected) xlSelected.classList.remove('sel');
         xlSelected = td;
         td.classList.add('sel');
         xlName.textContent = String.fromCharCode(65 + c) + (r + 1);
         xlFbar.textContent = td.textContent;
       });
+      td.addEventListener('dblclick', () => {
+        const meta = xlMeta[r] && xlMeta[r][c];
+        if (meta) startCellEdit(td, meta);
+      });
       tr.append(td);
       rowCells.push(td);
+      rowMeta.push(null);
     }
     table.append(tr);
     xlCells.push(rowCells);
+    xlMeta.push(rowMeta);
   }
   wrap.append(table);
   root.append(wrap);
 
   const tabs = el('div', 'xl-tabs');
   tabs.append(el('span', 'nav', '◀ ▶'));
-  for (const name of ['설비현황', '재고', '생산실적']) {
+  for (const name of ['설비현황', '재고', '생산실적', '설비등록']) {
     const t = el('span', 'tab' + (name === xlSheet ? ' active' : ''), name);
     t.addEventListener('click', () => {
       xlSheet = name;
+      xlFormBuilt = false;
       for (const x of tabs.querySelectorAll('.tab')) x.classList.toggle('active', x.textContent === name);
       refreshExcel();
     });
@@ -1262,29 +1283,197 @@ function buildExcel() {
   root.append(tabs);
 
   const status = el('div', 'xl-status');
-  status.append(el('span', null, '준비'), el('span', 'xl-agg', ''), el('span', null, '🔳 ▦ ▤  ─── 100% ＋'));
+  xlStatusEl = el('span', null, '준비');
+  status.append(xlStatusEl, el('span', 'xl-agg', ''), el('span', null, '🔳 ▦ ▤  ─── 100% ＋'));
   root.append(status);
 
   document.body.append(root);
+}
+
+/* 셀 편집 (더블클릭): 대수 = 기계 구매/판매, 클럭 = 오버클럭 */
+function startCellEdit(td, meta) {
+  if (xlEditing) return;
+  const cur = td.textContent.replace('%', '');
+  td.textContent = '';
+  const input = el('input', 'xl-edit');
+  input.value = cur;
+  td.append(input);
+  xlEditing = { td, input, meta };
+  input.focus();
+  input.select();
+  const finish = commit => {
+    if (!xlEditing) return;
+    const val = input.value;
+    xlEditing = null;
+    td.textContent = cur;
+    if (commit) applyCellEdit(meta, val);
+    refreshExcel();
+  };
+  input.addEventListener('keydown', e => {
+    e.stopPropagation(); // 엑셀 전체 Esc/F9 와 충돌 방지
+    if (e.key === 'Enter') finish(true);
+    else if (e.key === 'Escape') finish(false);
+  });
+  input.addEventListener('blur', () => finish(true));
+}
+
+function applyCellEdit(meta, val) {
+  const cx = cxById(meta.cxId);
+  const f = cx?.members.find(x => x.id === meta.fid);
+  if (!f) return;
+  const n = parseInt(val, 10);
+  if (isNaN(n)) { xlStatus('숫자를 입력하세요'); return; }
+  if (meta.t === 'count') {
+    const def = facDef(f);
+    const target = Math.max(0, n);
+    let applied = 0;
+    while (f.count < target) {
+      if (f.type === 'miner' && depositsLeft(f.resource, f.purity || 'normal') <= 0) { xlStatus('매장지가 부족하여 일부만 적용되었습니다'); break; }
+      if (!canAfford(def.cost)) { xlStatus('건설 재료가 부족하여 일부만 적용되었습니다'); break; }
+      pay(def.cost);
+      f.count++;
+      applied++;
+    }
+    while (f.count > target) { f.count--; refund(def.cost); applied++; }
+    if (applied && f.count === target) xlStatus(`${def.label} 대수 ${target}대 적용 완료`);
+    save();
+  } else if (meta.t === 'clock') {
+    const target = Math.min(250, Math.max(50, Math.round(n / 25) * 25));
+    const diff = shardsFor(target) - shardsFor(clockOf(f));
+    if (diff > 0 && stockOf(SHARD) < diff) { xlStatus(`동력 조각 ${diff}개 필요 (보유 ${fmtN(stockOf(SHARD))})`); return; }
+    addStock(SHARD, -diff);
+    f.clock = target;
+    xlStatus(`클럭 ${target}% 적용 완료` + (target !== n ? ' (25% 단위 반올림)' : ''));
+    save();
+  }
+}
+
+/* '설비등록' 시트: 폼 형태로 신규 시설 추가 */
+function renderFormSheet() {
+  // 셀 비우기
+  for (let r = 0; r < XL_ROWS; r++) {
+    for (let c = 0; c < XL_COLS; c++) {
+      xlCells[r][c].textContent = '';
+      xlCells[r][c].className = '';
+      xlMeta[r][c] = null;
+    }
+  }
+  const set = (r, c, v, cls) => { xlCells[r][c].textContent = v; if (cls) xlCells[r][c].className = cls; };
+  const sel = (r, c, options, value, onchange) => {
+    const s = el('select', 'xl-cellsel');
+    for (const [v, label] of options) {
+      const o = el('option', null, label);
+      o.value = v;
+      s.append(o);
+    }
+    if (value != null) s.value = value;
+    s.onchange = () => { onchange(s.value); };
+    xlCells[r][c].textContent = '';
+    xlCells[r][c].className = 'edit';
+    xlCells[r][c].append(s);
+    return s;
+  };
+  const form = renderFormSheet.form ??= { type: 'miner', res: state.raws[0], purity: 'normal', tier: 1, machine: state.machines[0], recipeId: null, genKey: state.gensUnlocked[0] || null, target: 'new' };
+
+  set(0, 0, '신규 설비 등록', 'hdr');
+  set(0, 1, '아래 항목을 선택 후 [등록]', 'hdr');
+  set(2, 0, '설비 유형');
+  const types = [['miner', '채굴기'], ['machine', '생산 기계'], ['sink', '출하 시설']];
+  if (state.gensUnlocked.length) types.splice(2, 0, ['gen', '발전기']);
+  if (state.ms >= 2) types.push(['awesink', 'AWESOME 싱크']);
+  sel(2, 1, types, form.type, v => { form.type = v; xlFormBuilt = false; refreshExcel(); });
+
+  let row = 4;
+  if (form.type === 'miner') {
+    set(row, 0, '자원');
+    sel(row, 1, state.raws.map(cn => [cn, iname(cn)]), form.res, v => { form.res = v; xlFormBuilt = false; refreshExcel(); });
+    if (DEPOSITS[form.res]) {
+      set(row + 2, 0, '순도');
+      const opts = ['pure', 'normal', 'impure'].filter(p => (DEPOSITS[form.res] || {})[p] != null)
+        .map(p => [p, `${PURITY[p].ko} (매장지 ${depositsLeft(form.res, p)})`]);
+      sel(row + 2, 1, opts, form.purity, v => { form.purity = v; });
+      if (!EXT[form.res]) {
+        set(row + 4, 0, '채굴기 등급');
+        sel(row + 4, 1, [1, 2, 3].filter(minerTierUnlocked).map(t => [t, `Mk.${t} (${MINERS[t].rate}/분)`]), form.tier, v => { form.tier = +v; });
+      }
+      row += 6;
+    } else row += 2;
+  } else if (form.type === 'machine') {
+    set(row, 0, '기계');
+    sel(row, 1, state.machines.map(m => [m, mname(m)]), form.machine, v => { form.machine = v; xlFormBuilt = false; refreshExcel(); });
+    set(row + 2, 0, '레시피');
+    const list = D.recipes.filter(r => r.machine === form.machine && (!r.alt || state.altUnlocked.includes(r.id)));
+    if (!list.some(r => r.id === form.recipeId)) form.recipeId = list[0]?.id;
+    sel(row + 2, 1, list.map(r => [r.id, (r.alt ? '★ ' : '') + r.ko]), form.recipeId, v => { form.recipeId = v; });
+    row += 4;
+  } else if (form.type === 'gen') {
+    set(row, 0, '발전기');
+    sel(row, 1, state.gensUnlocked.map(k => [k, `${D.xnames[GENS[k].build]} (+${GENS[k].power}MW)`]), form.genKey, v => { form.genKey = v; });
+    row += 2;
+  }
+
+  set(row, 0, '등록 위치');
+  const targets = [['new', '새 단지로']].concat(state.cx.map(c => [String(c.id), cxIdentity(c).name + ' 에 합류']));
+  if (![...targets.map(t => t[0])].includes(form.target)) form.target = 'new';
+  sel(row, 1, targets, form.target, v => { form.target = v; });
+
+  const btnRow = row + 2;
+  set(btnRow, 0, '');
+  const btn = xlCells[btnRow][1];
+  btn.textContent = '[ 등록 ]';
+  btn.className = 'edit xl-btn';
+  btn.onclick = () => {
+    const fac = { type: form.type, count: (form.type === 'sink' || form.type === 'awesink') ? 1 : 0 };
+    if (form.type === 'miner') {
+      fac.resource = form.res;
+      fac.purity = DEPOSITS[form.res] ? form.purity : 'normal';
+      if (!EXT[form.res]) fac.tier = form.tier;
+    } else if (form.type === 'machine') {
+      if (!form.recipeId) return;
+      fac.recipeId = form.recipeId;
+    } else if (form.type === 'gen') {
+      if (!form.genKey) return;
+      fac.genKey = form.genKey;
+    }
+    if (form.target === 'new') {
+      addComplex(fac); // save + rebuild 포함
+    } else {
+      const cx = cxById(+form.target);
+      if (!cx) return;
+      fac.id = state.seq++;
+      cx.members.push(fac);
+      save();
+      rebuild();
+    }
+    xlStatus('등록 완료 — 설비현황 시트에서 대수를 입력해 건설하세요');
+    xlFormBuilt = false;
+    refreshExcel();
+  };
+  set(btnRow + 2, 0, '※ 대수·클럭은 설비현황 시트에서 노란 셀을 더블클릭해 수정합니다.');
 }
 
 /** 현재 시트의 데이터 행 계산 */
 function excelRows() {
   const rows = [];
   if (xlSheet === '설비현황') {
-    rows.push(['구분', '설비명', '순도/클럭', '대수', '가동률', '소요전력(MW)', '비고', '']);
+    rows.push(['구분', '설비명', '클럭', '대수', '가동률', '소요전력(MW)', '비고', '']);
     for (const cx of state.cx) {
       const idn = cxIdentity(cx).name.replace(/[⚡🏭📦⛏]/g, '').trim();
       let first = true;
       for (const f of cx.members) {
         const def = facDef(f);
         const isProd = f.type === 'miner' || f.type === 'machine' || f.type === 'gen';
+        const canClock = f.type === 'miner' || f.type === 'machine';
         rows.push([
           first ? idn : '',
-          def.label.replace(/[★⚡]/g, '').trim(),
-          f.type === 'miner' && f.purity ? PURITY[f.purity].ko + ' / ' + clockOf(f) + '%'
-            : isProd ? clockOf(f) + '%' : '-',
-          isProd ? f.count : '-',
+          def.label.replace(/[★⚡]/g, '').trim()
+            + (f.type === 'miner' && f.purity && DEPOSITS[f.resource] ? ` [${PURITY[f.purity].ko}]` : ''),
+          canClock
+            ? { v: clockOf(f) + '%', cls: 'edit', meta: { t: 'clock', cxId: cx.id, fid: f.id } }
+            : '-',
+          isProd
+            ? { v: f.count, cls: 'edit', meta: { t: 'count', cxId: cx.id, fid: f.id } }
+            : '-',
           isProd && f.count > 0 ? Math.round((f.eff || 0) * 100) + '%' : '-',
           isProd ? Math.round(def.power * f.count * 10) / 10 : '-',
           f.why || (f.type === 'sink' ? '잉여 반출' : f.type === 'awesink' ? '포인트 전환' : ''),
@@ -1349,16 +1538,25 @@ function applyBiz() {
 
 function refreshExcel() {
   if (!state.biz || !xlCells) return;
+  if (xlSheet === '설비등록') {
+    if (!xlFormBuilt) { renderFormSheet(); xlFormBuilt = true; }
+    return;
+  }
   const rows = excelRows();
   let vSum = 0, vCnt = 0;
   for (let r = 0; r < XL_ROWS; r++) {
     for (let c = 0; c < XL_COLS; c++) {
       const td = xlCells[r][c];
-      const v = rows[r] ? (rows[r][c] ?? '') : '';
-      const s = String(v);
+      if (xlEditing && xlEditing.td === td) continue; // 편집 중인 셀은 건드리지 않음
+      const cell = rows[r] ? (rows[r][c] ?? '') : '';
+      const isObj = cell !== null && typeof cell === 'object';
+      const s = String(isObj ? cell.v : cell);
+      if (td.firstElementChild) td.textContent = ''; // 폼 시트 잔여물 제거
       if (td.textContent !== s) td.textContent = s;
+      xlMeta[r][c] = isObj ? (cell.meta || null) : null;
       const isNum = s !== '' && /^[-+]?[\d,.]+%?$/.test(s);
       td.classList.toggle('num', isNum);
+      td.classList.toggle('edit', isObj && cell.cls === 'edit');
       td.classList.toggle('hdr', r === 0 && s !== '');
       td.classList.toggle('warncell', c === 6 && s !== '' && !/^(공급|잉여|포인트)/.test(s) && r !== 0 && xlSheet === '설비현황');
       if (isNum) { vCnt++; vSum += parseFloat(s.replace(/[,%]/g, '')) || 0; }
@@ -1366,7 +1564,7 @@ function refreshExcel() {
   }
   const agg = document.querySelector('.xl-agg');
   if (agg) agg.textContent = `평균: ${vCnt ? fmtN(vSum / vCnt) : 0}  개수: ${vCnt}  합계: ${fmtN(vSum)}`;
-  if (xlSelected) xlFbar.textContent = xlSelected.textContent;
+  if (xlSelected && !xlEditing) xlFbar.textContent = xlSelected.textContent;
 }
 
 /* --- 시작 가이드 --- */
@@ -2389,6 +2587,9 @@ function init() {
   buildExcel();
   $('btn-biz').addEventListener('click', () => { state.biz = !state.biz; applyBiz(); save(); });
   document.addEventListener('keydown', e => {
+    // 엑셀 내부 입력 요소에서는 전역 단축키 무시
+    if (e.target && e.target.closest && e.target.closest('#excel')
+      && (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT')) return;
     if (e.key === 'F9' || (e.key === 'Escape' && state.biz)) {
       e.preventDefault();
       state.biz = !state.biz;
