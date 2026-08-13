@@ -1,5 +1,38 @@
 /* game2 전용 — 기본 스타일은 ../game/style.css 를 상속 */
 
+/* ====== 터치·모바일 지원 ====== */
+/* 포인터 이벤트가 스크롤에 뺏기지 않게 (드래그·패닝·연결) */
+#canvas-wrap, .cx-inner-wrap { touch-action: none; }
+
+/* 줌 버튼 (터치엔 휠이 없다) */
+#factory-panel { position: relative; }
+#zoom-ctrl {
+  position: absolute; right: 26px; bottom: 22px; z-index: 20;
+  display: flex; flex-direction: column; gap: 6px;
+}
+#zoom-ctrl button {
+  width: 38px; height: 38px; padding: 0;
+  font-size: 19px; font-weight: 700;
+  opacity: .85;
+}
+
+@media (max-width: 900px) {
+  body { overflow: auto; }
+  #layout { flex-direction: column; height: auto; padding: 8px; gap: 10px; }
+  #factory-panel { order: 1; }
+  #sidebar { order: 2; width: 100%; overflow: visible; padding-right: 0; }
+  #canvas-wrap { height: 62vh; }
+  header { padding: 8px 10px; gap: 8px; }
+  .head-left { flex: 1 1 100%; }
+  .head-right { flex-wrap: wrap; gap: 6px; }
+  .power-box { min-width: 130px; flex: 1 1 100%; }
+  .sub { display: none; }
+  .factory-bar { gap: 4px; }
+  footer { font-size: 10px; padding: 4px 10px 8px; }
+  .cx.expanded { min-width: 96vw; max-width: 96vw; }
+  .cx-inner-wrap { height: 46vh; }
+}
+
 /* ============ 업무 모드 (보스 키, F9) — 가짜 엑셀 전체 화면 ============ */
 #excel {
   position: fixed; inset: 0; z-index: 200;

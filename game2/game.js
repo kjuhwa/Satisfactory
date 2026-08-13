@@ -3324,6 +3324,24 @@ function initCanvasEvents() {
   document.addEventListener('pointerdown', ev => {
     if (edgeMenu && !edgeMenu.contains(ev.target)) closeEdgeMenu();
   }, true);
+
+  // 줌 버튼 (모바일·터치 대응 — 휠과 같은 로직, 화면 중앙 기준)
+  const zoomBy = mult => {
+    const old = zoomOf();
+    const z = Math.min(1.6, Math.max(0.4, old * mult));
+    if (Math.abs(z - old) < 1e-4) return;
+    const rect = wrap.getBoundingClientRect();
+    const cx0 = rect.width / 2, cy0 = rect.height / 2;
+    const px = (wrap.scrollLeft + cx0) / old, py = (wrap.scrollTop + cy0) / old;
+    state.zoom = z;
+    applyZoom();
+    layoutEdges();
+    wrap.scrollLeft = px * z - cx0;
+    wrap.scrollTop = py * z - cy0;
+    save();
+  };
+  $('zoom-in').addEventListener('click', () => zoomBy(1.25));
+  $('zoom-out').addEventListener('click', () => zoomBy(0.8));
 }
 
 /* ---------- 조립 ---------- */
