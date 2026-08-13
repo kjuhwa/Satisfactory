@@ -1,5 +1,56 @@
 /* game2 전용 — 기본 스타일은 ../game/style.css 를 상속 */
 
+/* ============ 업무 모드 (보스 키, F9) — ERP 현황판풍 라이트 테마 ============ */
+body.biz {
+  --bg: #f2f3f5;
+  --panel: #ffffff;
+  --panel2: #eef0f3;
+  --border: #c7cdd6;
+  --text: #24292f;
+  --muted: #68717d;
+  --accent: #2f5b96;
+  --accent-dim: #7189ab;
+  --good: #2e7d43;
+  --bad: #b04343;
+  --raw: #33639c;
+  --warn: #9c7c2a;
+  background: var(--bg);
+  color: var(--text);
+  font-family: "Malgun Gothic", "맑은 고딕", "Segoe UI", sans-serif;
+}
+/* 게임 느낌 제거: 애니메이션·그림자·둥근 모서리 최소화 */
+body.biz *, body.biz *::before, body.biz *::after {
+  animation: none !important;
+  transition: none !important;
+  box-shadow: none !important;
+}
+body.biz .panel, body.biz .cx, body.biz button, body.biz select, body.biz input,
+body.biz .edge-menu, body.biz .alt-card, body.biz #canvas-wrap {
+  border-radius: 2px !important;
+}
+/* 건물 일러스트 숨김 — 카드가 표 블록처럼 */
+body.biz .cx-visual { display: none !important; }
+body.biz .cx-head, body.biz .cx.power-plant .cx-head { border-radius: 0; background: #e7eaef; }
+/* 기본 버튼: 차분한 파랑 + 흰 글씨 */
+body.biz button:not(.ghost) { color: #fff; }
+/* 아이콘 무채색 */
+body.biz .icon, body.biz .icon-s { filter: grayscale(1) opacity(.8); }
+/* 캔버스: 밝은 모눈종이 */
+body.biz #canvas-wrap {
+  background:
+    linear-gradient(rgba(40, 60, 90, .06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(40, 60, 90, .06) 1px, transparent 1px),
+    #fafbfc;
+}
+/* 배너·선택 강조를 점잖게 */
+body.biz #banner { background: #eef4ea; border-color: var(--good); color: var(--good); }
+body.biz .hand-item:hover { background: #e9eef6; }
+body.biz .hand-item.sel { background: #dde6f2; color: var(--accent); }
+body.biz .need.lack { background: rgba(176, 67, 67, .08); }
+body.biz .cx.drop-target { border-color: var(--accent); }
+body.biz .cx.focused { border-color: var(--accent); }
+/* ============ 업무 모드 끝 ============ */
+
 /* v1의 #node-layer { pointer-events:none } 상속 복구 — .cx 카드는 이벤트를 받아야 함 */
 #node-layer .cx { pointer-events: auto; }
 

@@ -2191,6 +2191,27 @@ function init() {
   muteBtn.addEventListener('click', () => { state.muted = !state.muted; refreshMute(); save(); });
   refreshMute();
 
+  // 업무 모드 (보스 키): ERP 현황판처럼 보이는 라이트 테마, F9 로 즉시 전환
+  const bizBtn = $('btn-biz');
+  const applyBiz = () => {
+    document.body.classList.toggle('biz', !!state.biz);
+    bizBtn.textContent = state.biz ? '게임 모드' : '업무 모드';
+    document.title = state.biz ? '생산관리 시스템 — 설비·재고 현황' : 'Satisfactory 공장 단지';
+    const h1 = document.querySelector('header h1');
+    const sub = document.querySelector('header .sub');
+    if (h1) h1.textContent = state.biz ? '생산관리 시스템' : '🏙 Satisfactory 공장 단지';
+    if (sub) {
+      sub.textContent = state.biz
+        ? '설비 · 재고 · 전력 관리 현황판'
+        : '시설을 겹쳐 단지로 합치는 실험판 — 내부 물류는 자동, 줌으로 들여다보기';
+    }
+  };
+  bizBtn.addEventListener('click', () => { state.biz = !state.biz; applyBiz(); save(); });
+  document.addEventListener('keydown', e => {
+    if (e.key === 'F9') { e.preventDefault(); state.biz = !state.biz; applyBiz(); save(); }
+  });
+  applyBiz();
+
   initCanvasEvents();
   rebuild();
   let lastTick = performance.now();
