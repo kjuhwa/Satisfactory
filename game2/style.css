@@ -377,10 +377,7 @@ body.biz #excel { display: flex; }
 .zoom-mid .cx-strip, .zoom-near .cx-strip { display: flex; }
 .cx.focused .cx-strip { display: flex; }
 
-/* 근접 줌·고정: 내부 시설 목록 (조작 가능) */
-.cx-members { display: none; border-bottom: 1px dashed var(--border); }
-.zoom-near .cx-members, .cx.focused .cx-members { display: block; }
-.zoom-near .cx-strip, .cx.focused .cx-strip { display: none; }
+/* 시설 목록은 내부 배선 편집기(더블클릭)로 대체됨 — 스트립은 모든 줌에서 유지 */
 .mem {
   display: flex; align-items: center; gap: 5px;
   padding: 3px 9px;

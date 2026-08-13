@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 const D = window.GAME_DATA;
 
 /* ---------- 데이터 헬퍼 (본편과 동일 수치) ---------- */
@@ -504,12 +504,35 @@ function autoLayoutCx(cx) {
   }
 }
 
+/** 처리량에 맞는 최소 벨트 티어 (자동 배선은 목 조르지 않게 무료로 맞춰 준다) */
+function tierForRate(rate) {
+  const mult = 1 + 0.2 * rlv('belt');
+  for (let t = 1; t <= 5; t++) if (BELT_TIERS[t].cap * mult >= rate - 1e-6) return t;
+  return 5;
+}
+/** 이 연결이 감당해야 할 분당 처리량 추정 */
+function iedgeRate(cx, e) {
+  const item = e.from.item;
+  if (e.from.f === 'in') {
+    const c = facById(cx, e.to.f);
+    if (!c) return 60;
+    const p = facDef(c).ins.find(x => x.item === item);
+    return p ? p.rate * Math.max(1, c.count) : 60;
+  }
+  const f = facById(cx, e.from.f);
+  if (!f) return 60;
+  const p = facDef(f).outs.find(x => x.item === item);
+  return p ? p.rate * Math.max(1, f.count) : 60;
+}
+
 /** 빠진 배선을 아이템 매칭으로 채움 (합체·마이그레이션·설비등록의 자동 배선) */
 function ensureWired(cx) {
   cx.iedges ??= [];
   const addI = (fromF, toF, item) => {
     if (cx.iedges.some(e => e.from.f === fromF && e.from.item === item && e.to.f === toF)) return;
-    cx.iedges.push({ id: state.seq++, from: { f: fromF, item }, to: { f: toF, item } });
+    const e = { id: state.seq++, from: { f: fromF, item }, to: { f: toF, item } };
+    e.tier = tierForRate(iedgeRate(cx, e)); // 자동 배선은 처리량에 맞는 티어로
+    cx.iedges.push(e);
   };
   const producersOfItem = item => cx.members.filter(m => facDef(m).outs.some(o => o.item === item));
   const consumersOfItem = item => cx.members.filter(m => facDef(m).ins.some(o => o.item === item));
@@ -2614,135 +2637,6 @@ function buildCanvas() {
     }
     box.append(strip);
 
-    // 근접 줌: 시설 목록 (조작)
-    const memBox = el('div', 'cx-members');
-    for (const f of cx.members) {
-      const def = facDef(f);
-      const memWrap = el('div', 'mem-wrap');
-      const row = el('div', 'mem');
-      const nm = el('span', 'm-name');
-      if (def.iconCn) nm.append(iconEl(def.iconCn, 's'), ' ');
-      nm.append(def.label);
-      nm.title = def.label;
-      row.append(nm);
-      if (f.type === 'sink' || f.type === 'awesink') {
-        row.append(el('span', 'hint', f.type === 'sink' ? '잉여 → 재고' : '잉여 소각 → P'));
-      } else {
-        const effS = el('span', 'm-eff');
-        row.append(effS);
-        const minus = el('button', 'ghost', '−');
-        const cnt = el('span', 'cnt', f.count);
-        const plus = el('button', null, '+');
-        const noDeposit = () => f.type === 'miner' && depositsLeft(f.resource, f.purity || 'normal') <= 0;
-        minus.addEventListener('click', () => { if (f.count > 0) { f.count--; refund(def.cost); update(); save(); } });
-        plus.addEventListener('click', () => {
-          if (noDeposit()) return;
-          if (canAfford(def.cost)) { pay(def.cost); f.count++; update(); save(); }
-        });
-        plus.title = Object.entries(def.cost).map(([cn, n]) => `${iname(cn)}×${n}`).join(', ');
-        // 쿠폰 긴급 건설 (재료 불필요)
-        const cpn = el('button', 'ghost cbuild');
-        cpn.addEventListener('click', () => {
-          const price = couponBuildCost(def);
-          if (state.coupons < price) return;
-          if (noDeposit()) return;
-          state.coupons -= price;
-          f.count++;
-          sfx('coupon');
-          update();
-          save();
-        });
-        const clk = el('button', 'ghost clk');
-        clk.addEventListener('click', ev => openClockMenu(ev, cx.id, f.id));
-        row.append(minus, cnt, plus, cpn, clk);
-        onUpdate(() => {
-          const price = couponBuildCost(def);
-          cpn.textContent = '🎟' + price;
-          cpn.disabled = state.coupons < price || noDeposit();
-          cpn.title = noDeposit() ? '남은 매장지가 없습니다'
-            : `쿠폰 ${price}장으로 재료 없이 즉시 1대 건설 (보유 ${state.coupons}장)`;
-        });
-        if (f.type === 'miner' && !EXT[f.resource]) {
-          const up = el('button', 'up');
-          row.append(up);
-          onUpdate(() => {
-            const next = (f.tier || 1) + 1;
-            const cost = minerUpgradeCost(f, next);
-            up.hidden = !MINERS[next];
-            if (up.hidden) return;
-            up.textContent = '⬆Mk.' + next;
-            const locked = !minerTierUnlocked(next);
-            up.disabled = locked || !canAfford(cost) || f.count <= 0;
-            up.title = locked
-              ? `Mk.${next} 미해금 (마일스톤 ${next === 2 ? 4 : 6} 필요)`
-              : f.count <= 0 ? '채굴기가 없습니다'
-              : `Mk.${next}로 업그레이드 — ${MINERS[f.tier || 1].rate} → ${MINERS[next].rate}/분`
-                + `\n차액: ${Object.entries(cost).map(([cn, n]) => `${iname(cn)}×${fmtN(n)}`).join(', ') || '무료'}`;
-          });
-          up.addEventListener('click', () => upgradeMiner(cx.id, f.id));
-        }
-        onUpdate(() => {
-          cnt.textContent = f.count;
-          plus.disabled = !canAfford(def.cost) || noDeposit();
-          minus.disabled = f.count <= 0;
-          clk.textContent = '⚡' + clockOf(f) + '%';
-          clk.classList.toggle('oc', clockOf(f) !== 100);
-          const pct = Math.round((f.eff || 0) * 100);
-          effS.textContent = f.count > 0 ? pct + '%' : '휴면';
-          effS.style.color = pct >= 99 ? 'var(--good)' : (f.count > 0 ? 'var(--bad)' : 'var(--muted)');
-          effS.title = f.why || '';
-        });
-      }
-      const out = el('button', 'ghost', '⇱');
-      out.title = '단지에서 꺼내기';
-      out.addEventListener('click', () => extractMember(cx.id, f.id));
-      const del = el('button', 'ghost danger', '✕');
-      del.title = '시설 삭제 (비용 환불)';
-      del.addEventListener('click', () => removeFacility(cx.id, f.id));
-      row.append(out, del);
-      memWrap.append(row);
-
-      // 이 시설이 먹는 재료 (합체 후에도 어느 기계가 무엇을 못 받는지 보이게)
-      if (def.ins.length) {
-        const ins = el('div', 'm-ins');
-        for (const p of def.ins) {
-          const chip = el('span', 'need');
-          const amt = el('b');
-          chip.append(iconEl(p.item, 's'), amt);
-          chip.title = `${iname(p.item)} — ${fmtN(p.rate * Math.max(f.count, 1))}/분 소비`;
-          ins.append(chip);
-          onUpdate(() => {
-            amt.textContent = fmtN((f.buf && f.buf.in[p.item]) || 0);
-            chip.classList.toggle('lack', f.lack === p.item);
-          });
-        }
-        memWrap.append(ins);
-      }
-      // 이 시설 1대 건설(증설) 비용 — 보유/필요
-      const costs = Object.entries(def.cost);
-      if (costs.length && f.type !== 'sink' && f.type !== 'awesink') {
-        const bl = el('div', 'm-ins m-build');
-        bl.append(el('span', 'nl', '건설'));
-        for (const [cn, n] of costs) {
-          const chip = el('span', 'need');
-          const amt = el('b');
-          chip.append(iconEl(cn, 's'), amt);
-          makeCraftLink(chip, cn);
-          chip.title = `${iname(cn)} ×${n} — 1대 건설 비용`
-            + (chip.classList.contains('craft') ? ' · 클릭하면 수동 제작 선택' : '');
-          bl.append(chip);
-          onUpdate(() => {
-            const have = stockOf(cn);
-            amt.textContent = `${fmtN(have)}/${n}`;
-            chip.classList.toggle('short', have < n);
-            chip.classList.toggle('ok', have >= n);
-          });
-        }
-        memWrap.append(bl);
-      }
-      memBox.append(memWrap);
-    }
-    box.append(memBox);
 
     // 외부 포트
     const ports = cxPorts(cx);
@@ -3017,9 +2911,9 @@ function buildInnerEditor(cx) {
     }
     body.append(insCol, outsCol);
     node.append(body);
-    // 노드 푸터: 구매·쿠폰 건설·오버클럭
+    // 노드 푸터: 구매·쿠폰 건설·오버클럭·승급·꺼내기·삭제
+    const nfoot = el('div', 'fnode-foot');
     if (f.type !== 'sink' && f.type !== 'awesink') {
-      const nfoot = el('div', 'fnode-foot');
       const minus = el('button', 'ghost', '−');
       const cnt = el('span', 'cnt', f.count);
       const plus = el('button', null, '+');
@@ -3042,7 +2936,22 @@ function buildInnerEditor(cx) {
       const clk = el('button', 'ghost clk');
       clk.addEventListener('click', ev => openClockMenu(ev, cx.id, f.id));
       nfoot.append(minus, cnt, plus, cpn, clk);
-      node.append(nfoot);
+      if (f.type === 'miner' && !EXT[f.resource]) {
+        const up = el('button', 'ghost up');
+        up.addEventListener('click', () => upgradeMiner(cx.id, f.id));
+        nfoot.append(up);
+        onUpdate(() => {
+          const next = (f.tier || 1) + 1;
+          up.hidden = !MINERS[next];
+          if (up.hidden) return;
+          up.textContent = '⬆' + next;
+          const cost = minerUpgradeCost(f, next);
+          const locked = !minerTierUnlocked(next);
+          up.disabled = locked || !canAfford(cost) || f.count <= 0;
+          up.title = locked ? `Mk.${next} 미해금` : `Mk.${next} 승급 — 차액: `
+            + (Object.entries(cost).map(([cn, n]) => `${iname(cn)}×${fmtN(n)}`).join(', ') || '무료');
+        });
+      }
       onUpdate(() => {
         cnt.textContent = f.count;
         plus.disabled = !canAfford(def.cost) || noDeposit();
@@ -3054,6 +2963,14 @@ function buildInnerEditor(cx) {
         clk.classList.toggle('oc', clockOf(f) !== 100);
       });
     }
+    const outB = el('button', 'ghost', '⇱');
+    outB.title = '단지에서 꺼내기 (독립 단지로)';
+    outB.addEventListener('click', () => extractMember(cx.id, f.id));
+    const delB = el('button', 'ghost danger', '✕');
+    delB.title = '시설 삭제 (비용 환불)';
+    delB.addEventListener('click', () => removeFacility(cx.id, f.id));
+    nfoot.append(outB, delB);
+    node.append(nfoot);
     onUpdate(() => {
       if (f.type === 'sink' || f.type === 'awesink') { eff.textContent = ''; why.style.display = 'none'; return; }
       const pct = Math.round((f.eff || 0) * 100);
@@ -3370,6 +3287,13 @@ function update() {
 function init() {
   state = load() || freshState();
   for (const cx of state.cx) ensureWired(cx); // 구 저장 자동 배선 (신규 배선엔 state.seq 필요)
+  // 일회성 보정: 초기 마이그레이션이 Mk.1로 깔았던 내부 배선을 처리량에 맞게 승급
+  if (!state.iedgeTierFix) {
+    for (const cx of state.cx) {
+      for (const e of cx.iedges) e.tier = Math.max(e.tier || 1, tierForRate(iedgeRate(cx, e)));
+    }
+    state.iedgeTierFix = true;
+  }
 
   const offlineCap = (4 + 4 * rlv('offline')) * 3600; // 연구로 연장
   const elapsedSec = Math.min(offlineCap, (Date.now() - (state.savedAt || Date.now())) / 1000);
