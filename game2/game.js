@@ -86,6 +86,13 @@ const researchCost = k => RESEARCH[k].base * Math.pow(2, rlv(k));
 const genPowerOf = g => g.power * (1 + 0.1 * rlv('power'));
 const beltCap = e => Math.round(beltOf(e).cap * (1 + 0.2 * rlv('belt')));
 
+/** 쿠폰 긴급 건설: 재료 대신 쿠폰으로 1대 건설 — 가격은 건설 재료의 싱크 포인트 가치 비례 */
+function couponBuildCost(def) {
+  let pts = 0;
+  for (const [cn, n] of Object.entries(def.cost)) pts += ptsOf(cn) * n;
+  return Math.max(1, Math.ceil(pts / 500));
+}
+
 function depositsLeft(resource, purity) {
   const pool = DEPOSITS[resource];
   if (!pool) return Infinity;
@@ -2429,9 +2436,28 @@ function buildCanvas() {
           if (canAfford(def.cost)) { pay(def.cost); f.count++; update(); save(); }
         });
         plus.title = Object.entries(def.cost).map(([cn, n]) => `${iname(cn)}×${n}`).join(', ');
+        // 쿠폰 긴급 건설 (재료 불필요)
+        const cpn = el('button', 'ghost cbuild');
+        cpn.addEventListener('click', () => {
+          const price = couponBuildCost(def);
+          if (state.coupons < price) return;
+          if (noDeposit()) return;
+          state.coupons -= price;
+          f.count++;
+          sfx('coupon');
+          update();
+          save();
+        });
         const clk = el('button', 'ghost clk');
         clk.addEventListener('click', ev => openClockMenu(ev, cx.id, f.id));
-        row.append(minus, cnt, plus, clk);
+        row.append(minus, cnt, plus, cpn, clk);
+        onUpdate(() => {
+          const price = couponBuildCost(def);
+          cpn.textContent = '🎟' + price;
+          cpn.disabled = state.coupons < price || noDeposit();
+          cpn.title = noDeposit() ? '남은 매장지가 없습니다'
+            : `쿠폰 ${price}장으로 재료 없이 즉시 1대 건설 (보유 ${state.coupons}장)`;
+        });
         if (f.type === 'miner' && !EXT[f.resource]) {
           const up = el('button', 'up');
           row.append(up);

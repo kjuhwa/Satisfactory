@@ -295,6 +295,8 @@ body.biz #excel { display: flex; }
   padding: 0 9px 4px 22px;
 }
 .mem .up { padding: 0 5px; font-size: 10px; font-weight: 700; }
+.mem .cbuild { padding: 0 5px; font-size: 10px; font-weight: 700; color: var(--accent); }
+.mem .cbuild:disabled { color: var(--muted); }
 
 /* 중간 줌: 내부 시설 아이콘 스트립 */
 .cx-strip {
