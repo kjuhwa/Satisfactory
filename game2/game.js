@@ -156,6 +156,7 @@ function freshState() {
 function withDefaults(s) {
   s.sinkPts ??= 0; s.coupons ??= 0; s.couponsPrinted ??= 0;
   s.altUnlocked ??= [];
+  s.speed ??= 1;
   s.won = s.ms >= MS.length;
   if (s.ms >= 7 && !s.gensUnlocked.includes('nuclear')) s.gensUnlocked.push('nuclear');
   for (const cx of s.cx) { cx.pool ??= {}; cx.members ??= []; }
@@ -608,12 +609,14 @@ function tick(dtMin) {
     }
   }
 
+  let printed = 0;
   while (state.sinkPts >= couponCost(state.couponsPrinted)) {
     state.sinkPts -= couponCost(state.couponsPrinted);
     state.couponsPrinted++;
     state.coupons++;
-    sfx('coupon');
+    printed++;
   }
+  if (printed > 0) sfx('coupon'); // 고배속에서 연타 방지: 틱당 1회만
 
   const keys = new Set([...Object.keys(prev), ...Object.keys(state.stock)]);
   lastRates = {};
@@ -2599,14 +2602,32 @@ function init() {
   });
   applyBiz();
 
+  // 게임 속도 (×1 ~ ×100)
+  const spdSel = $('speed');
+  for (const s of [1, 2, 5, 10, 25, 50, 100]) {
+    const opt = el('option', null, '⏩ ×' + s);
+    opt.value = s;
+    spdSel.append(opt);
+  }
+  spdSel.value = state.speed || 1;
+  spdSel.addEventListener('change', () => { state.speed = +spdSel.value; save(); });
+
   initCanvasEvents();
   rebuild();
   let lastTick = performance.now();
   setInterval(() => {
     const now = performance.now();
-    const dtMin = Math.min(10000, now - lastTick) / 60000;
+    const realMin = Math.min(10000, now - lastTick) / 60000;
     lastTick = now;
-    tick(dtMin);
+    // 고배속에서도 시뮬 정확도를 유지하도록 큰 틱을 잘게 쪼개 실행
+    let dt = realMin * (state.speed || 1);
+    const MAX_STEP = 0.06; // 게임-분
+    let guard = 0;
+    while (dt > 1e-9 && guard++ < 300) {
+      const step = Math.min(dt, MAX_STEP);
+      tick(step);
+      dt -= step;
+    }
     update();
   }, 200);
   setInterval(save, 10000);
