@@ -190,7 +190,8 @@ function withDefaults(s) {
   s.bonusDeposits ??= {};
   s.won = s.ms >= MS.length;
   if (s.ms >= 7 && !s.gensUnlocked.includes('nuclear')) s.gensUnlocked.push('nuclear');
-  for (const cx of s.cx) { cx.pool ??= {}; cx.members ??= []; }
+  for (const cx of s.cx) { cx.members ??= []; }
+  migrateToWiring(s); // 공유 저장고 → 내부 배선 방식
   return s;
 }
 
@@ -479,40 +480,120 @@ function itemDepth(item, path) {
 }
 
 const poolCap = cx => 100 * Math.max(2, cx.members.length) * (1 + 0.5 * rlv('store'));
+const fbufCap = f => 100 * Math.max(1, f.count) * (1 + 0.5 * rlv('store'));
+const facById = (cx, fid) => cx.members.find(m => m.id === fid);
+const hasInI = (cx, fid, item) => cx.iedges.some(e => e.to.f === fid && e.to.item === item);
+const hasOutI = (cx, fid, item) => cx.iedges.some(e => e.from.f === fid && e.from.item === item);
+const cx0ConsumesInbox = (cx, item) => cx.iedges.some(e => e.from.f === 'in' && e.from.item === item);
+let lastIFlow = {}; // 내부 연결선 흐름량 (표시용)
+
+/** 내부 자동 배치: 깊이순 열 정렬 (채굴기 왼쪽 → 완제품 오른쪽) */
+function autoLayoutCx(cx) {
+  const depthOfFac = f => {
+    if (f.type === 'miner') return 0;
+    if (f.type === 'gen') return 1;
+    if (f.type === 'machine') return Math.max(1, itemDepth(recipeById[f.recipeId].out[0][0]));
+    return 90; // sink류는 맨 오른쪽
+  };
+  const colY = {};
+  for (const f of [...cx.members].sort((a, b) => depthOfFac(a) - depthOfFac(b))) {
+    const d = Math.min(depthOfFac(f), 6);
+    colY[d] = (colY[d] ?? 0) + 1;
+    f.ix = 165 + d * 205;
+    f.iy = 40 + (colY[d] - 1) * 135;
+  }
+}
+
+/** 빠진 배선을 아이템 매칭으로 채움 (합체·마이그레이션·설비등록의 자동 배선) */
+function ensureWired(cx) {
+  cx.iedges ??= [];
+  const addI = (fromF, toF, item) => {
+    if (cx.iedges.some(e => e.from.f === fromF && e.from.item === item && e.to.f === toF)) return;
+    cx.iedges.push({ id: state.seq++, from: { f: fromF, item }, to: { f: toF, item } });
+  };
+  const producersOfItem = item => cx.members.filter(m => facDef(m).outs.some(o => o.item === item));
+  const consumersOfItem = item => cx.members.filter(m => facDef(m).ins.some(o => o.item === item));
+  // 1) 모든 소비 입력: 내부 생산자 → 없으면 반입구에서
+  for (const f of cx.members) {
+    for (const p of facDef(f).ins) {
+      if (hasInI(cx, f.id, p.item)) continue;
+      const prods = producersOfItem(p.item).filter(m => m.id !== f.id);
+      if (prods.length) for (const pr of prods) addI(pr.id, f.id, p.item);
+      else addI('in', f.id, p.item);
+    }
+  }
+  // 2) 모든 생산 출력: 소비처 없으면 출하/싱크 → 그것도 없으면 반출구
+  const sink = cx.members.find(m => m.type === 'sink');
+  const awe = cx.members.find(m => m.type === 'awesink');
+  for (const f of cx.members) {
+    for (const p of facDef(f).outs) {
+      if (hasOutI(cx, f.id, p.item)) continue;
+      const cons = consumersOfItem(p.item).filter(m => m.id !== f.id);
+      if (cons.length) { for (const cf of cons) addI(f.id, cf.id, p.item); continue; }
+      if (sink) { addI(f.id, sink.id, p.item); continue; }
+      if (awe && ptsOf(p.item) > 0) { addI(f.id, awe.id, p.item); continue; }
+      addI(f.id, 'out', p.item);
+    }
+    // 잉여도 흘러나가도록: 소비처가 있어도 출하 연결을 하나 추가 (기계행 우선 배분이라 잉여만 나감)
+    for (const p of facDef(f).outs) {
+      const drainTo = sink ? sink.id : (awe && ptsOf(p.item) > 0 ? awe.id : null);
+      if (drainTo != null && !cx.iedges.some(e => e.from.f === f.id && e.from.item === p.item
+        && (e.to.f === drainTo || e.to.f === 'out'))) {
+        addI(f.id, drainTo, p.item);
+      }
+    }
+  }
+  // 3) 좌표 없는 시설 배치
+  if (cx.members.some(f => f.ix == null)) autoLayoutCx(cx);
+}
+
+/** 구 저장(공유 저장고 방식) → 배선 방식 마이그레이션 */
+function migrateToWiring(s) {
+  for (const cx of s.cx) {
+    cx.iedges ??= [];
+    cx.inbox ??= (cx.pool || {});
+    cx.outbox ??= {};
+    delete cx.pool;
+    for (const f of cx.members) f.buf ??= { in: {}, out: {} };
+  }
+  return s;
+}
 
 function tick(dtMin) {
   const prev = { ...state.stock };
 
-  // 1) 발전 (연료는 단지 저장고에서)
+  // 1) 발전 (연료는 시설 입력 버퍼에서 — 내부 배선으로 공급)
   let supply = BASE_POWER;
   for (const cx of state.cx) {
-    const cap = poolCap(cx);
     for (const f of cx.members) {
       if (f.type !== 'gen') continue;
       if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
       const g = GENS[f.genKey];
+      const cap = fbufCap(f);
       let frac = 1, limit = null, limitKind = null;
       for (const [cn, rate] of g.burns) {
         const need = rate * f.count * dtMin;
         if (need > 0) {
-          const v = (cx.pool[cn] || 0) / need;
+          const v = (f.buf.in[cn] || 0) / need;
           if (v < frac) { frac = v; limit = cn; limitKind = 'in'; }
         }
       }
       for (const [cn, rate] of (g.wastes || [])) {
         const need = rate * f.count * dtMin;
         if (need > 0) {
-          const v = Math.max(0, cap - (cx.pool[cn] || 0)) / need;
+          const v = Math.max(0, cap - (f.buf.out[cn] || 0)) / need;
           if (v < frac) { frac = v; limit = cn; limitKind = 'out'; }
         }
       }
       frac = Math.min(1, Math.max(0, frac));
-      for (const [cn, rate] of g.burns) cx.pool[cn] = Math.max(0, (cx.pool[cn] || 0) - rate * f.count * dtMin * frac);
-      for (const [cn, rate] of (g.wastes || [])) cx.pool[cn] = (cx.pool[cn] || 0) + rate * f.count * dtMin * frac;
+      for (const [cn, rate] of g.burns) f.buf.in[cn] = Math.max(0, (f.buf.in[cn] || 0) - rate * f.count * dtMin * frac);
+      for (const [cn, rate] of (g.wastes || [])) f.buf.out[cn] = (f.buf.out[cn] || 0) + rate * f.count * dtMin * frac;
       supply += genPowerOf(g) * f.count * frac;
       f.eff = frac;
       f.why = frac >= 0.99 || !limit ? null
-        : limitKind === 'in' ? `연료 부족: ${iname(limit)}` : `폐기물 정체: ${iname(limit)}`;
+        : limitKind === 'in'
+          ? (hasInI(cx, f.id, limit) ? `연료 부족: ${iname(limit)}` : `연료 미연결: ${iname(limit)} — 내부에서 포트를 연결하세요`)
+          : (hasOutI(cx, f.id, limit) ? `폐기물 정체: ${iname(limit)}` : `폐기물 미연결: ${iname(limit)} — 처리 라인을 연결하세요`);
       const bound = limit && frac < 0.999;
       f.lack = bound && limitKind === 'in' ? limit : null;
       f.jam = bound && limitKind === 'out' ? limit : null;
@@ -524,7 +605,7 @@ function tick(dtMin) {
   for (const cx of state.cx) for (const f of cx.members) demand += facDef(f).power * Math.max(f.count, f.type === 'awesink' || f.type === 'sink' ? 1 : 0);
   const powerEff = demand > 0 ? Math.min(1, supply / demand) : 1;
 
-  // 3) 단지 간 벨트 이동
+  // 3) 단지 간 벨트 이동 (반출구 상자 → 상대 단지 반입구 상자)
   lastEdgeFlow = {};
   const groups = {};
   for (const e of state.edges) (groups[e.from.cx + '|' + e.from.item] ??= []).push(e);
@@ -532,111 +613,140 @@ function tick(dtMin) {
     const [fromId, item] = key.split('|');
     const from = cxById(+fromId);
     if (!from) continue;
-    const avail = from.pool[item] || 0;
+    const avail = from.outbox[item] || 0;
     if (avail <= 0) continue;
     const share = avail / edges.length;
     for (const e of edges) {
       const dst = cxById(e.to.cx);
       if (!dst) continue;
-      const space = poolCap(dst) - (dst.pool[item] || 0);
+      const space = poolCap(dst) - (dst.inbox[item] || 0);
       const moved = Math.min(share, beltCap(e) * dtMin, Math.max(0, space));
-      dst.pool[item] = (dst.pool[item] || 0) + moved;
-      from.pool[item] -= moved;
+      dst.inbox[item] = (dst.inbox[item] || 0) + moved;
+      from.outbox[item] -= moved;
       lastEdgeFlow[e.id] = moved / dtMin;
+      // 도착 품목을 소비할 내부 배선이 없고 출하 시설이 있으면 자동으로 연결
+      if (moved > 0 && !cx0ConsumesInbox(dst, item)) {
+        const sk = dst.members.find(m => m.type === 'sink' || (m.type === 'awesink' && ptsOf(item) > 0));
+        if (sk) dst.iedges.push({ id: state.seq++, from: { f: 'in', item }, to: { f: sk.id, item } });
+      }
     }
   }
 
-  // 4) 시설 가동 — 채굴 후, 같은 재료를 원하는 기계끼리는 요구량 비율대로 공정 배분
+  // 4) 내부 배선 이동 — 기계행 우선, 남는 것은 출하/싱크/반출구로
+  lastIFlow = {};
   for (const cx of state.cx) {
-    const cap = poolCap(cx);
+    cx.ptsRate = 0;
+    const igroups = {};
+    for (const e of cx.iedges) (igroups[e.from.f + '|' + e.from.item] ??= []).push(e);
+    for (const [key, edges] of Object.entries(igroups)) {
+      const [fromKey, item] = key.split('|');
+      const srcFac = fromKey === 'in' ? null : facById(cx, +fromKey);
+      const avail = fromKey === 'in' ? (cx.inbox[item] || 0) : (srcFac ? (srcFac.buf.out[item] || 0) : 0);
+      if (avail <= 0) continue;
+      const isDrain = e => e.to.f === 'out'
+        || (facById(cx, e.to.f) && ['sink', 'awesink'].includes(facById(cx, e.to.f).type));
+      const primary = edges.filter(e => !isDrain(e));
+      const drains = edges.filter(isDrain);
+      let remaining = avail;
+      const moveTo = (e, budget) => {
+        let moved = 0;
+        const cap = beltCap(e) * dtMin;
+        if (e.to.f === 'out') {
+          const space = poolCap(cx) - (cx.outbox[item] || 0);
+          moved = Math.min(budget, cap, Math.max(0, space));
+          cx.outbox[item] = (cx.outbox[item] || 0) + moved;
+        } else {
+          const dst = facById(cx, e.to.f);
+          if (!dst) return 0;
+          if (dst.type === 'sink') {
+            moved = Math.min(budget, cap);
+            addStock(item, moved);
+          } else if (dst.type === 'awesink') {
+            if (ptsOf(item) > 0) {
+              moved = Math.min(budget, cap);
+              state.sinkPts += moved * ptsOf(item);
+              cx.ptsRate = (cx.ptsRate || 0) + moved * ptsOf(item) / dtMin;
+            }
+          } else {
+            const space = fbufCap(dst) - (dst.buf.in[item] || 0);
+            moved = Math.min(budget, cap, Math.max(0, space));
+            dst.buf.in[item] = (dst.buf.in[item] || 0) + moved;
+          }
+        }
+        lastIFlow[e.id] = (lastIFlow[e.id] || 0) + moved / dtMin;
+        return moved;
+      };
+      if (primary.length) {
+        const share = remaining / primary.length;
+        for (const e of primary) remaining -= moveTo(e, share);
+      }
+      if (drains.length && remaining > 1e-9) {
+        const share = remaining / drains.length;
+        for (const e of drains) remaining -= moveTo(e, share);
+      }
+      const used = avail - remaining;
+      if (fromKey === 'in') cx.inbox[item] = Math.max(0, (cx.inbox[item] || 0) - used);
+      else if (srcFac) srcFac.buf.out[item] = Math.max(0, (srcFac.buf.out[item] || 0) - used);
+    }
+  }
+
+  // 5) 시설 가동 (자기 버퍼 기준 — 배선이 없으면 굶거나 막힌다)
+  for (const cx of state.cx) {
+    cx.ptsRate = cx.ptsRate || 0;
     for (const f of cx.members) {
       if (f.type === 'miner' || f.type === 'machine') f.lack = f.jam = null;
     }
-    // 4a) 채굴기 먼저 (이번 틱 생산분을 기계가 쓸 수 있게)
     for (const f of cx.members) {
-      if (f.type !== 'miner') continue;
-      if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
-      const def = facDef(f);
-      const out = def.outs[0];
-      const want = out.rate * f.count * powerEff * dtMin;
-      const space = Math.max(0, cap - (cx.pool[out.item] || 0));
-      const make = Math.min(want, space);
-      cx.pool[out.item] = (cx.pool[out.item] || 0) + make;
-      f.eff = want > 0 ? powerEff * (make / want) : 0;
-      f.why = f.eff >= 0.99 ? null
-        : space < want ? `저장고 가득: ${iname(out.item)} — 소비·수출·출하가 필요합니다`
-        : powerEff < 0.99 ? '전력 부족' : null;
-      f.lack = null;
-      f.jam = space < want ? out.item : null;
-    }
-    // 4b) 기계: 스냅샷 기준으로 재료를 비율 배분 (한 기계가 독식해 다른 기계가 굶는 것 방지)
-    const snap = { ...cx.pool };
-    const wants = {};
-    const machines = [];
-    for (const f of cx.members) {
-      if (f.type !== 'machine') continue;
-      if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
-      const def = facDef(f);
-      const run = f.count * powerEff;
-      if (run <= 0) { f.eff = 0; f.why = '전력 부족'; continue; }
-      machines.push({ f, def, run });
-      for (const p of def.ins) wants[p.item] = (wants[p.item] || 0) + p.rate * run * dtMin;
-    }
-    for (const { f, def, run } of machines) {
-      let frac = 1, limit = null, limitKind = null;
-      for (const p of def.ins) {
-        const need = p.rate * run * dtMin;
-        if (need > 0) {
-          // 내 몫 = 저장고 스냅샷 × (내 요구량 / 전체 요구량) — 비율이 곧 가동률 상한
-          const share = Math.min(1, (snap[p.item] || 0) / wants[p.item]);
-          if (share < frac) { frac = share; limit = p.item; limitKind = 'in'; }
+      if (f.type === 'miner') {
+        if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
+        const def = facDef(f);
+        const out = def.outs[0];
+        const cap = fbufCap(f);
+        const want = out.rate * f.count * powerEff * dtMin;
+        const space = Math.max(0, cap - (f.buf.out[out.item] || 0));
+        const make = Math.min(want, space);
+        f.buf.out[out.item] = (f.buf.out[out.item] || 0) + make;
+        f.eff = want > 0 ? powerEff * (make / want) : 0;
+        f.why = f.eff >= 0.99 ? null
+          : space < want
+            ? (hasOutI(cx, f.id, out.item) ? `출력 정체: ${iname(out.item)}` : `출력 미연결: ${iname(out.item)} — 내부에서 포트를 연결하세요`)
+            : powerEff < 0.99 ? '전력 부족' : null;
+        f.jam = space < want ? out.item : null;
+      } else if (f.type === 'machine') {
+        if (f.count <= 0) { f.eff = 0; f.why = '기계 없음'; continue; }
+        const def = facDef(f);
+        const run = f.count * powerEff;
+        if (run <= 0) { f.eff = 0; f.why = '전력 부족'; continue; }
+        const cap = fbufCap(f);
+        let frac = 1, limit = null, limitKind = null;
+        for (const p of def.ins) {
+          const need = p.rate * run * dtMin;
+          if (need > 0) {
+            const v = (f.buf.in[p.item] || 0) / need;
+            if (v < frac) { frac = v; limit = p.item; limitKind = 'in'; }
+          }
         }
-      }
-      for (const p of def.outs) {
-        const make = p.rate * run * dtMin;
-        if (make > 0) {
-          const v = Math.max(0, cap - (cx.pool[p.item] || 0)) / make;
-          if (v < frac) { frac = v; limit = p.item; limitKind = 'out'; }
+        for (const p of def.outs) {
+          const make = p.rate * run * dtMin;
+          if (make > 0) {
+            const v = Math.max(0, cap - (f.buf.out[p.item] || 0)) / make;
+            if (v < frac) { frac = v; limit = p.item; limitKind = 'out'; }
+          }
         }
+        frac = Math.min(1, Math.max(0, frac));
+        for (const p of def.ins) f.buf.in[p.item] = Math.max(0, (f.buf.in[p.item] || 0) - p.rate * run * dtMin * frac);
+        for (const p of def.outs) f.buf.out[p.item] = (f.buf.out[p.item] || 0) + p.rate * run * dtMin * frac;
+        f.eff = powerEff * frac;
+        f.why = f.eff >= 0.99 ? null
+          : limit && frac < powerEff
+            ? (limitKind === 'in'
+              ? (hasInI(cx, f.id, limit) ? `재료 부족: ${iname(limit)}` : `입력 미연결: ${iname(limit)} — 내부에서 포트를 연결하세요`)
+              : (hasOutI(cx, f.id, limit) ? `출력 정체: ${iname(limit)}` : `출력 미연결: ${iname(limit)} — 내부에서 포트를 연결하세요`))
+            : powerEff < 0.99 ? '전력 부족' : null;
+        const bound = limit && frac < 0.999;
+        f.lack = bound && limitKind === 'in' ? limit : null;
+        f.jam = bound && limitKind === 'out' ? limit : null;
       }
-      frac = Math.min(1, Math.max(0, frac));
-      for (const p of def.ins) cx.pool[p.item] = Math.max(0, (cx.pool[p.item] || 0) - p.rate * run * dtMin * frac);
-      for (const p of def.outs) cx.pool[p.item] = (cx.pool[p.item] || 0) + p.rate * run * dtMin * frac;
-      f.eff = powerEff * frac;
-      f.why = f.eff >= 0.99 ? null
-        : limit && frac < powerEff
-          ? (limitKind === 'in' ? `재료 부족: ${iname(limit)}`
-              : `저장고 가득: ${iname(limit)} — 출하 시설을 합치거나 소비처를 늘리세요`)
-          : powerEff < 0.99 ? '전력 부족' : null;
-      const bound = limit && frac < 0.999;
-      f.lack = bound && limitKind === 'in' ? limit : null;
-      f.jam = bound && limitKind === 'out' ? limit : null;
-    }
-    // 5) 출하/싱크: 모든 잉여 반출 — 내부 소비 품목은 소비 1분치만 남기고 초과분을 내보냄
-    const consRate = {};
-    for (const f of cx.members) {
-      for (const p of facDef(f).ins) consRate[p.item] = (consRate[p.item] || 0) + p.rate * f.count;
-    }
-    if (hasSink(cx)) {
-      for (const cn of Object.keys(cx.pool)) {
-        const reserve = consRate[cn] || 0; // 내부 소비 1분치 버퍼
-        const excess = cx.pool[cn] - reserve;
-        if (excess > 0) { addStock(cn, excess); cx.pool[cn] = reserve; }
-      }
-    }
-    if (hasAwesink(cx)) {
-      let rate = 0;
-      for (const cn of Object.keys(cx.pool)) {
-        if (ptsOf(cn) <= 0) continue;
-        const reserve = consRate[cn] || 0;
-        const excess = cx.pool[cn] - reserve;
-        if (excess > 0) {
-          state.sinkPts += excess * ptsOf(cn);
-          rate += excess * ptsOf(cn) / dtMin;
-          cx.pool[cn] = reserve;
-        }
-      }
-      cx.ptsRate = rate;
     }
   }
 
@@ -1287,10 +1397,10 @@ function autoBuildPlan(plan) {
   }
   members.push({ id: state.seq++, type: 'sink', count: 1 }); // 잉여 자동 출하
   const pos = spawnXY();
-  state.cx.push({ id: state.seq++, x: pos.x, y: pos.y, members, pool: {} });
+  newComplex(members, pos.x, pos.y); // 자동 배치 + 자동 배선 포함
   save();
   rebuild();
-  showBanner(`📋 ${iname(plan.target)} ${fmtN(plan.rate)}/분 단지가 통째로 배치되었습니다 — 단지를 클릭해 내부 시설의 + 로 기계를 구매하세요.`, 7000);
+  showBanner(`📋 ${iname(plan.target)} ${fmtN(plan.rate)}/분 단지가 통째로 배치되었습니다 — 더블클릭하면 내부 배선을 볼 수 있습니다.`, 7000);
 }
 
 function openPlanner() {
@@ -1684,7 +1794,10 @@ function renderFormSheet() {
       const cx = cxById(+form.target);
       if (!cx) return;
       fac.id = state.seq++;
+      fac.buf = { in: {}, out: {} };
       cx.members.push(fac);
+      autoLayoutCx(cx);
+      ensureWired(cx); // 자동 배선
       save();
       rebuild();
     }
@@ -1858,7 +1971,83 @@ function buildTutorial() {
 const drag = { mode: null, cx: null, dx: 0, dy: 0, moved: false, fromCx: null, fromItem: null, dropTarget: null, pendingRebuild: false };
 let portEls = {};
 let focusedCx = null;
+let expandedCx = null; // 더블클릭으로 펼친 단지 (내부 배선 편집기)
+let iPortEls = {};     // 내부 포트 점: "fid|item|dir" (펼친 단지 하나 기준)
+let iSvgEl = null, iSpaceEl = null;
 let edgeMenu = null;
+
+function iPortAnchor(fid, item, dir) {
+  const elp = iPortEls[fid + '|' + item + '|' + dir] || iPortEls[fid + '|*|' + dir];
+  if (!elp || !iSpaceEl) return null;
+  const rect = elp.getBoundingClientRect();
+  const cRect = iSpaceEl.getBoundingClientRect();
+  const z = zoomOf();
+  return { x: (rect.left + rect.width / 2 - cRect.left) / z, y: (rect.top + rect.height / 2 - cRect.top) / z };
+}
+function layoutIEdges() {
+  if (!iSvgEl || expandedCx == null) return;
+  const cx = cxById(expandedCx);
+  if (!cx) return;
+  for (const path of iSvgEl.querySelectorAll('path.edge, path.edge-hit')) {
+    const e = cx.iedges.find(x => x.id === +path.dataset.id);
+    if (!e) { path.remove(); continue; }
+    const a = iPortAnchor(e.from.f, e.from.item, 'out');
+    const b = iPortAnchor(e.to.f, e.to.item, 'in');
+    if (a && b) path.setAttribute('d', edgePath(a, b));
+  }
+}
+function addIEdge(cx, fromF, fromItem, toF, toItem) {
+  const dstFac = toF === 'out' ? null : facById(cx, toF);
+  const sinkLike = toF === 'out' || (dstFac && (dstFac.type === 'sink' || dstFac.type === 'awesink'));
+  if (!sinkLike && toItem !== fromItem) return;
+  const finalItem = sinkLike ? fromItem : toItem;
+  if (fromF === toF) return;
+  if (cx.iedges.some(e => e.from.f === fromF && e.from.item === fromItem && e.to.f === toF && e.to.item === finalItem)) return;
+  cx.iedges.push({ id: state.seq++, from: { f: fromF, item: fromItem }, to: { f: toF, item: finalItem } });
+  save(); rebuild();
+}
+function removeIEdge(cx, id) {
+  const e = cx.iedges.find(x => x.id === id);
+  if (e) for (let t = 2; t <= (e.tier || 1); t++) refund(BELT_TIERS[t].cost);
+  cx.iedges = cx.iedges.filter(x => x.id !== id);
+  save(); rebuild();
+}
+function openIEdgeMenu(ev, cx, edgeId) {
+  closeEdgeMenu();
+  const e = cx.iedges.find(x => x.id === edgeId);
+  if (!e) return;
+  const t = e.tier || 1;
+  const menu = el('div', 'edge-menu');
+  const head = el('div', 'em-head');
+  head.append(iconEl(e.from.item, 's'), ` ${iname(e.from.item)} `, el('b', null, `Mk.${t}`));
+  menu.append(head);
+  menu.append(el('div', 'em-line', `용량 ${beltCap(e)}/분 · 현재 흐름 ${fmtN(lastIFlow[e.id] || 0)}/분`));
+  if (t < 5) {
+    const next = BELT_TIERS[t + 1];
+    const up = el('button', null, `Mk.${t + 1} 업그레이드 (${Math.round(next.cap * (1 + 0.2 * rlv('belt')))}/분)`);
+    up.disabled = !canAfford(next.cost);
+    up.addEventListener('click', () => {
+      if (!canAfford(next.cost)) return;
+      pay(next.cost);
+      e.tier = t + 1;
+      closeEdgeMenu();
+      save(); rebuild();
+    });
+    menu.append(up);
+    const chips = chipRow(next.cost);
+    chips.refresh();
+    const line = el('div', 'em-line');
+    line.append(chips.box);
+    menu.append(line);
+  } else menu.append(el('div', 'em-line', '최고 티어입니다'));
+  const del = el('button', 'ghost danger', '연결 삭제' + (t > 1 ? ' (업그레이드 환불)' : ''));
+  del.addEventListener('click', () => { removeIEdge(cx, edgeId); closeEdgeMenu(); });
+  menu.append(del);
+  menu.style.left = Math.min(ev.clientX, window.innerWidth - 240) + 'px';
+  menu.style.top = Math.min(ev.clientY, window.innerHeight - 180) + 'px';
+  document.body.append(menu);
+  edgeMenu = menu;
+}
 
 const zoomOf = () => state.zoom || 1;
 function applyZoom() {
@@ -2024,24 +2213,36 @@ function spawnXY() {
   const k = state.cx.length;
   return { x: 60 + (k % 5) * 240, y: 60 + Math.floor(k / 5) * 200 % 900 };
 }
+function newComplex(members, x, y) {
+  const cx = { id: state.seq++, x, y, members, pool: undefined, inbox: {}, outbox: {}, iedges: [] };
+  delete cx.pool;
+  for (const f of members) f.buf ??= { in: {}, out: {} };
+  state.cx.push(cx);
+  ensureWired(cx);
+  return cx;
+}
 function addComplex(fac) {
   fac.id = state.seq++;
   const pos = spawnXY();
-  state.cx.push({ id: state.seq++, x: pos.x, y: pos.y, members: [fac], pool: {} });
+  newComplex([fac], pos.x, pos.y);
   save(); rebuild();
 }
 function mergeComplex(srcId, dstId) {
   const src = cxById(srcId), dst = cxById(dstId);
   if (!src || !dst || src === dst) return;
   dst.members.push(...src.members);
-  for (const [cn, v] of Object.entries(src.pool)) dst.pool[cn] = (dst.pool[cn] || 0) + v;
+  dst.iedges.push(...(src.iedges || []));
+  for (const [cn, v] of Object.entries(src.inbox || {})) dst.inbox[cn] = (dst.inbox[cn] || 0) + v;
+  for (const [cn, v] of Object.entries(src.outbox || {})) dst.outbox[cn] = (dst.outbox[cn] || 0) + v;
   for (const e of state.edges) {
     if (e.from.cx === srcId) e.from.cx = dstId;
     if (e.to.cx === srcId) e.to.cx = dstId;
   }
-  state.edges = state.edges.filter(e => e.from.cx !== e.to.cx); // 자기 연결 제거 (내부는 자동)
+  state.edges = state.edges.filter(e => e.from.cx !== e.to.cx);
   state.cx = state.cx.filter(c => c.id !== srcId);
   if (focusedCx === srcId) focusedCx = dstId;
+  autoLayoutCx(dst);   // 새 식구 포함 재배치
+  ensureWired(dst);    // 빠진 배선 자동 연결 (기존 배선은 유지)
   sfx('merge');
   save(); rebuild();
 }
@@ -2051,7 +2252,8 @@ function extractMember(cxId, facId) {
   const idx = cx.members.findIndex(f => f.id === facId);
   if (idx < 0) return;
   const [f] = cx.members.splice(idx, 1);
-  state.cx.push({ id: state.seq++, x: cx.x + 60, y: cx.y + 120, members: [f], pool: {} });
+  cx.iedges = cx.iedges.filter(e => e.from.f !== facId && e.to.f !== facId);
+  newComplex([f], cx.x + 60, cx.y + 120);
   if (cx.members.length === 0) removeComplexInner(cx.id);
   save(); rebuild();
 }
@@ -2148,6 +2350,7 @@ function removeFacility(cxId, facId) {
   const def = facDef(f);
   refund(Object.fromEntries(Object.entries(def.cost).map(([cn, c]) => [cn, c * f.count])));
   cx.members = cx.members.filter(x => x.id !== facId);
+  cx.iedges = cx.iedges.filter(e => e.from.f !== facId && e.to.f !== facId);
   if (cx.members.length === 0) removeComplexInner(cxId);
   save(); rebuild();
 }
@@ -2363,7 +2566,8 @@ function buildCanvas() {
           + (n.outer > 0.05 ? ` · 외부 반입 필요 ${fmtN(n.outer)}/분` : ' · 내부에서 전량 자급');
         nWrap.append(chip);
         onUpdate(() => {
-          const have = cx.pool[n.item] || 0;
+          const have = (cx.inbox[n.item] || 0)
+            + cx.members.reduce((s, f) => s + ((f.buf && f.buf.in[n.item]) || 0), 0);
           const starving = cx.members.some(f => f.lack === n.item);
           amt.textContent = fmtN(have);
           chip.classList.toggle('lack', starving);
@@ -2508,7 +2712,7 @@ function buildCanvas() {
           chip.title = `${iname(p.item)} — ${fmtN(p.rate * Math.max(f.count, 1))}/분 소비`;
           ins.append(chip);
           onUpdate(() => {
-            amt.textContent = fmtN(cx.pool[p.item] || 0);
+            amt.textContent = fmtN((f.buf && f.buf.in[p.item]) || 0);
             chip.classList.toggle('lack', f.lack === p.item);
           });
         }
@@ -2564,7 +2768,7 @@ function buildCanvas() {
       p.append(dot, iconEl(pin.item, 's'), rate, pool);
       insCol.append(p);
       onUpdate(() => {
-        const have = cx.pool[pin.item] || 0;
+        const have = cx.inbox[pin.item] || 0;
         const starving = cx.members.some(f => f.lack === pin.item);
         pool.textContent = fmtN(have);
         rate.textContent = `${fmtN(pin.rate)}/분 ` + (starving ? '부족' : '필요');
@@ -2582,7 +2786,7 @@ function buildCanvas() {
       p.append(dot, iconEl(pout.item, 's'), el('span', 'rate', `+${fmtN(pout.rate)}/분`), pool);
       outsCol.append(p);
       onUpdate(() => {
-        const have = cx.pool[pout.item] || 0;
+        const have = cx.outbox[pout.item] || 0;
         const cap = poolCap(cx);
         const jammed = cx.members.some(f => f.jam === pout.item) || have >= cap * 0.98;
         pool.textContent = fmtN(have);
@@ -2598,10 +2802,28 @@ function buildCanvas() {
     const foot = el('div', 'cx-foot');
     const powerS = el('span');
     foot.append(powerS);
+    const expandBtn = el('button', 'ghost', expandedCx === cx.id ? '⤡ 접기' : '⤢ 내부 배선');
+    expandBtn.title = '더블클릭으로도 열고 닫을 수 있습니다';
+    expandBtn.addEventListener('click', () => {
+      expandedCx = expandedCx === cx.id ? null : cx.id;
+      rebuild();
+    });
+    foot.append(expandBtn);
     const del = el('button', 'ghost danger del', '✕ 단지 철거');
     del.addEventListener('click', () => removeComplex(cx.id));
     foot.append(del);
     box.append(foot);
+
+    // 더블클릭 = 내부 배선 편집기 열기/닫기
+    box.addEventListener('dblclick', e => {
+      if (e.target.closest('button, select, input, .craft, .port, .cx-inner-wrap')) return;
+      expandedCx = expandedCx === cx.id ? null : cx.id;
+      rebuild();
+    });
+    if (expandedCx === cx.id) {
+      box.classList.add('expanded');
+      box.append(buildInnerEditor(cx));
+    }
 
     onUpdate(() => {
       // 단지 가동률 = 기계 수 가중 평균
@@ -2670,6 +2892,208 @@ function buildCanvas() {
   layoutEdges();
 }
 
+/* 내부 배선 편집기 (v1 노드 캔버스를 단지 안에 이식) */
+function buildInnerEditor(cx) {
+  iPortEls = {};
+  const wrap = el('div', 'cx-inner-wrap');
+  const space = el('div', 'cx-inner-space');
+  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  svg.classList.add('iedge-svg');
+  const layer = el('div', 'inode-layer');
+  space.append(svg, layer);
+  wrap.append(space);
+  iSvgEl = svg;
+  iSpaceEl = space;
+
+  const mkDot = (fid, item, dir) => {
+    const dot = el('span', 'dot');
+    dot.dataset.ifid = fid;
+    dot.dataset.item = item;
+    dot.dataset.dir = dir;
+    iPortEls[fid + '|' + item + '|' + dir] = dot;
+    return dot;
+  };
+
+  // 게이트: 반입구 (외부 벨트가 가져온 아이템)
+  const inItems = [...new Set([
+    ...Object.keys(cx.inbox).filter(k => (cx.inbox[k] || 0) > 0.05),
+    ...cx.iedges.filter(e => e.from.f === 'in').map(e => e.from.item),
+    ...state.edges.filter(e => e.to.cx === cx.id).map(e => e.to.item),
+  ])].filter(i => i !== '*');
+  const gateIn = el('div', 'fnode inode gate');
+  gateIn.style.left = '8px';
+  gateIn.style.top = '30px';
+  const giHead = el('div', 'fnode-head');
+  giHead.append('📥 반입구');
+  gateIn.append(giHead);
+  {
+    const body = el('div', 'fnode-body');
+    const outs = el('div', 'ports out');
+    for (const item of inItems) {
+      const p = el('div', 'port');
+      const buf = el('span', 'buf');
+      p.append(mkDot('in', item, 'out'), iconEl(item, 's'), buf);
+      p.title = iname(item) + ' — 외부에서 반입';
+      outs.append(p);
+      onUpdate(() => { buf.textContent = fmtN(cx.inbox[item] || 0); });
+    }
+    if (!inItems.length) outs.append(el('div', 'hint', ' 반입 없음 '));
+    body.append(el('div', 'ports in'), outs);
+    gateIn.append(body);
+  }
+  layer.append(gateIn);
+
+  // 게이트: 반출구 (외부 벨트로 내보낼 아이템)
+  const gateOut = el('div', 'fnode inode gate');
+  gateOut.style.right = '8px';
+  gateOut.style.top = '30px';
+  const goHead = el('div', 'fnode-head');
+  goHead.append('📤 반출구');
+  gateOut.append(goHead);
+  {
+    const body = el('div', 'fnode-body');
+    const ins = el('div', 'ports in');
+    const p = el('div', 'port');
+    p.append(mkDot('out', '*', 'in'), el('span', null, '모든 아이템'));
+    p.title = '여기로 연결하면 단지 밖(외부 벨트)으로 나갑니다';
+    ins.append(p);
+    const outList = el('div', 'hint');
+    ins.append(outList);
+    onUpdate(() => {
+      outList.textContent = Object.entries(cx.outbox)
+        .filter(([, v]) => v > 0.05)
+        .map(([cn, v]) => `${iname(cn)} ${fmtN(v)}`).join(' · ');
+    });
+    body.append(ins, el('div', 'ports out'));
+    gateOut.append(body);
+  }
+  layer.append(gateOut);
+
+  // 시설 노드
+  for (const f of cx.members) {
+    const def = facDef(f);
+    const node = el('div', 'fnode inode ' + f.type);
+    if (f.ix == null) autoLayoutCx(cx);
+    node.style.left = f.ix + 'px';
+    node.style.top = f.iy + 'px';
+    node.dataset.fid = f.id;
+    const head = el('div', 'fnode-head');
+    if (def.iconCn) head.append(iconEl(def.iconCn, 's'));
+    head.append(el('span', null, def.label));
+    const eff = el('span', 'eff');
+    head.append(eff);
+    node.append(head);
+    const why = el('div', 'fnode-why');
+    node.append(why);
+    const body = el('div', 'fnode-body');
+    const insCol = el('div', 'ports in');
+    const outsCol = el('div', 'ports out');
+    if (f.type === 'sink' || f.type === 'awesink') {
+      const p = el('div', 'port');
+      p.append(mkDot(f.id, '*', 'in'), el('span', null,
+        f.type === 'sink' ? '모두 → 재고' : '소각 → P (0P 불가)'));
+      insCol.append(p);
+    }
+    for (const pin of def.ins) {
+      const p = el('div', 'port');
+      const buf = el('span', 'buf');
+      p.append(mkDot(f.id, pin.item, 'in'), iconEl(pin.item, 's'),
+        el('span', 'rate', `${fmtN(pin.rate * Math.max(f.count, 1))}/분`), buf);
+      p.title = iname(pin.item);
+      insCol.append(p);
+      onUpdate(() => {
+        buf.textContent = fmtN(f.buf.in[pin.item] || 0);
+        p.classList.toggle('starving', f.lack === pin.item);
+      });
+    }
+    for (const pout of def.outs) {
+      const p = el('div', 'port');
+      const buf = el('span', 'buf');
+      p.append(mkDot(f.id, pout.item, 'out'), iconEl(pout.item, 's'),
+        el('span', 'rate', `${fmtN(pout.rate * Math.max(f.count, 1))}/분`), buf);
+      p.title = iname(pout.item);
+      outsCol.append(p);
+      onUpdate(() => { buf.textContent = fmtN(f.buf.out[pout.item] || 0); });
+    }
+    body.append(insCol, outsCol);
+    node.append(body);
+    // 노드 푸터: 구매·쿠폰 건설·오버클럭
+    if (f.type !== 'sink' && f.type !== 'awesink') {
+      const nfoot = el('div', 'fnode-foot');
+      const minus = el('button', 'ghost', '−');
+      const cnt = el('span', 'cnt', f.count);
+      const plus = el('button', null, '+');
+      const noDeposit = () => f.type === 'miner' && depositsLeft(f.resource, f.purity || 'normal') <= 0;
+      minus.addEventListener('click', () => { if (f.count > 0) { f.count--; refund(def.cost); update(); save(); } });
+      plus.addEventListener('click', () => {
+        if (noDeposit()) return;
+        if (canAfford(def.cost)) { pay(def.cost); f.count++; update(); save(); }
+      });
+      plus.title = Object.entries(def.cost).map(([cn, n]) => `${iname(cn)}×${n}`).join(', ');
+      const cpn = el('button', 'ghost cbuild');
+      cpn.addEventListener('click', () => {
+        const price = couponBuildCost(def);
+        if (state.coupons < price || noDeposit()) return;
+        state.coupons -= price;
+        f.count++;
+        sfx('coupon');
+        update(); save();
+      });
+      const clk = el('button', 'ghost clk');
+      clk.addEventListener('click', ev => openClockMenu(ev, cx.id, f.id));
+      nfoot.append(minus, cnt, plus, cpn, clk);
+      node.append(nfoot);
+      onUpdate(() => {
+        cnt.textContent = f.count;
+        plus.disabled = !canAfford(def.cost) || noDeposit();
+        minus.disabled = f.count <= 0;
+        const price = couponBuildCost(def);
+        cpn.textContent = '🎟' + price;
+        cpn.disabled = state.coupons < price || noDeposit();
+        clk.textContent = '⚡' + clockOf(f) + '%';
+        clk.classList.toggle('oc', clockOf(f) !== 100);
+      });
+    }
+    onUpdate(() => {
+      if (f.type === 'sink' || f.type === 'awesink') { eff.textContent = ''; why.style.display = 'none'; return; }
+      const pct = Math.round((f.eff || 0) * 100);
+      eff.textContent = f.count > 0 ? pct + '%' : '휴면';
+      eff.style.color = pct >= 99 ? 'var(--good)' : (f.count > 0 ? 'var(--bad)' : 'var(--muted)');
+      const w = pct < 99 ? (f.why || '') : '';
+      why.textContent = w ? '⚠ ' + w : '';
+      why.style.display = w ? '' : 'none';
+    });
+    layer.append(node);
+  }
+
+  // 내부 연결선
+  for (const e of cx.iedges) {
+    const tier = e.tier || 1;
+    const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    path.classList.add('edge');
+    path.dataset.id = e.id;
+    path.style.strokeWidth = (2 + (tier - 1) * 0.7) + 'px';
+    svg.append(path);
+    const hit = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+    hit.classList.add('edge-hit');
+    hit.dataset.id = e.id;
+    const title = document.createElementNS('http://www.w3.org/2000/svg', 'title');
+    title.textContent = `${iname(e.from.item)} · Mk.${tier} ${beltCap(e)}/분 (클릭: 업그레이드/삭제)`;
+    hit.append(title);
+    hit.addEventListener('click', ev => openIEdgeMenu(ev, cx, e.id));
+    hit.addEventListener('pointerenter', () => path.classList.add('hover'));
+    hit.addEventListener('pointerleave', () => path.classList.remove('hover'));
+    svg.append(hit);
+  }
+  onUpdate(() => {
+    for (const path of svg.querySelectorAll('path.edge')) {
+      path.classList.toggle('flow', (lastIFlow[+path.dataset.id] || 0) > 1e-6);
+    }
+  });
+  requestAnimationFrame(layoutIEdges);
+  return wrap;
+}
+
 function addEdge(fromCx, fromItem, toCxId, toItem) {
   const dst = cxById(toCxId);
   if (!dst || fromCx === toCxId) return;
@@ -2678,6 +3102,17 @@ function addEdge(fromCx, fromItem, toCxId, toItem) {
   const finalItem = sinkLike ? fromItem : toItem;
   if (state.edges.some(e => e.from.cx === fromCx && e.from.item === fromItem && e.to.cx === toCxId && e.to.item === finalItem)) return;
   state.edges.push({ id: state.seq++, from: { cx: fromCx, item: fromItem }, to: { cx: toCxId, item: finalItem } });
+  // 게이트 자동 배선: 보내는 쪽은 생산자→반출구, 받는 쪽은 반입구→소비처
+  const src = cxById(fromCx);
+  if (src && !src.iedges.some(e => e.to.f === 'out' && e.to.item === fromItem)) {
+    const prod = src.members.find(m => facDef(m).outs.some(o => o.item === fromItem));
+    if (prod) src.iedges.push({ id: state.seq++, from: { f: prod.id, item: fromItem }, to: { f: 'out', item: fromItem } });
+  }
+  if (!cx0ConsumesInbox(dst, finalItem)) {
+    const cons = dst.members.find(m => facDef(m).ins.some(o => o.item === finalItem))
+      || dst.members.find(m => m.type === 'sink' || (m.type === 'awesink' && ptsOf(finalItem) > 0));
+    if (cons) dst.iedges.push({ id: state.seq++, from: { f: 'in', item: finalItem }, to: { f: cons.id, item: finalItem } });
+  }
   save(); rebuild();
 }
 
@@ -2690,8 +3125,58 @@ function initCanvasEvents() {
     return target.closest('.port .dot') || target.closest('.port')?.querySelector('.dot') || null;
   };
 
+  const iPos = e => {
+    const rect = iSpaceEl.getBoundingClientRect();
+    const z = zoomOf();
+    return { x: (e.clientX - rect.left) / z, y: (e.clientY - rect.top) / z };
+  };
+
   wrap.addEventListener('pointerdown', e => {
     if (e.target.closest && e.target.closest('.edge-hit')) return;
+    // ---- 내부 배선 편집기 (펼친 단지 안) ----
+    const innerWrap = e.target.closest('.cx-inner-wrap');
+    if (innerWrap) {
+      const icx = cxById(expandedCx);
+      if (!icx) return;
+      const idot = e.target.closest('.inode .port .dot')
+        || e.target.closest('.inode .port')?.querySelector('.dot');
+      const inode = e.target.closest('.inode');
+      if (idot && idot.dataset.dir === 'out') {
+        drag.mode = 'iedge';
+        drag.iCx = icx;
+        drag.fromF = idot.dataset.ifid === 'in' ? 'in' : +idot.dataset.ifid;
+        drag.fromItem = idot.dataset.item;
+        const pending = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+        pending.classList.add('pending');
+        pending.id = 'pending-iedge';
+        iSvgEl.append(pending);
+        try { wrap.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+        e.preventDefault();
+        return;
+      }
+      if (inode && !inode.classList.contains('gate')
+        && !e.target.closest('button, select, input, .port')) {
+        drag.mode = 'inode';
+        drag.iCx = icx;
+        drag.if = facById(icx, +inode.dataset.fid);
+        const pos = iPos(e);
+        drag.dx = pos.x - drag.if.ix;
+        drag.dy = pos.y - drag.if.iy;
+        inode.classList.add('dragging');
+        try { wrap.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+        e.preventDefault();
+        return;
+      }
+      if (!inode && !e.target.closest('button, select, input')) {
+        drag.mode = 'ipan';
+        drag.iWrap = innerWrap;
+        drag.px = e.clientX; drag.py = e.clientY;
+        drag.sx = innerWrap.scrollLeft; drag.sy = innerWrap.scrollTop;
+        try { wrap.setPointerCapture(e.pointerId); } catch (err) { /* 무시 */ }
+        e.preventDefault();
+      }
+      return; // 내부 조작은 월드 드래그로 번지지 않게
+    }
     const card = e.target.closest('.cx');
     const interactive = e.target.closest('button, select, input, .craft');
     const inPort = e.target.closest('.port');
@@ -2754,6 +3239,21 @@ function initCanvasEvents() {
       const b = canvasPos(e);
       const pending = $('pending-edge');
       if (a && pending) pending.setAttribute('d', edgePath(a, b));
+    } else if (drag.mode === 'inode' && drag.if) {
+      const pos = iPos(e);
+      drag.if.ix = Math.max(0, Math.min(1250, pos.x - drag.dx));
+      drag.if.iy = Math.max(0, Math.min(620, pos.y - drag.dy));
+      const node = iSpaceEl?.querySelector(`.inode[data-fid="${drag.if.id}"]`);
+      if (node) { node.style.left = drag.if.ix + 'px'; node.style.top = drag.if.iy + 'px'; }
+      layoutIEdges();
+    } else if (drag.mode === 'iedge') {
+      const a = iPortAnchor(drag.fromF, drag.fromItem, 'out');
+      const b = iPos(e);
+      const pending = document.getElementById('pending-iedge');
+      if (a && pending) pending.setAttribute('d', edgePath(a, b));
+    } else if (drag.mode === 'ipan' && drag.iWrap) {
+      drag.iWrap.scrollLeft = drag.sx - (e.clientX - drag.px);
+      drag.iWrap.scrollTop = drag.sy - (e.clientY - drag.py);
     } else if (drag.mode === 'pan') {
       wrap.scrollLeft = drag.sx - (e.clientX - drag.px);
       wrap.scrollTop = drag.sy - (e.clientY - drag.py);
@@ -2765,7 +3265,24 @@ function initCanvasEvents() {
       $('pending-edge')?.remove();
       const at = document.elementFromPoint(e.clientX, e.clientY);
       const dot = at && at.closest ? (at.closest('.port .dot') || at.closest('.port')?.querySelector('.dot')) : null;
-      if (dot && dot.dataset.dir === 'in') addEdge(drag.fromCx, drag.fromItem, +dot.dataset.cx, dot.dataset.item);
+      if (dot && dot.dataset.dir === 'in' && dot.dataset.cx != null) {
+        addEdge(drag.fromCx, drag.fromItem, +dot.dataset.cx, dot.dataset.item);
+      }
+    }
+    if (drag.mode === 'iedge') {
+      document.getElementById('pending-iedge')?.remove();
+      const at = document.elementFromPoint(e.clientX, e.clientY);
+      const dot = at && at.closest
+        ? (at.closest('.inode .port .dot') || at.closest('.inode .port')?.querySelector('.dot')) : null;
+      if (dot && dot.dataset.dir === 'in' && dot.dataset.ifid != null && drag.iCx) {
+        const toF = dot.dataset.ifid === 'out' ? 'out' : +dot.dataset.ifid;
+        addIEdge(drag.iCx, drag.fromF, drag.fromItem, toF, dot.dataset.item);
+      }
+    }
+    if (drag.mode === 'inode' && drag.if) {
+      const node = iSpaceEl?.querySelector(`.inode[data-fid="${drag.if.id}"]`);
+      if (node) node.classList.remove('dragging');
+      save();
     }
     if (drag.mode === 'cx' && drag.cx) {
       const card = $('node-layer').querySelector(`.cx[data-id="${drag.cx.id}"]`);
@@ -2834,6 +3351,7 @@ function update() {
 /* ---------- 시작 ---------- */
 function init() {
   state = load() || freshState();
+  for (const cx of state.cx) ensureWired(cx); // 구 저장 자동 배선 (신규 배선엔 state.seq 필요)
 
   const offlineCap = (4 + 4 * rlv('offline')) * 3600; // 연구로 연장
   const elapsedSec = Math.min(offlineCap, (Date.now() - (state.savedAt || Date.now())) / 1000);
@@ -2918,6 +3436,7 @@ function init() {
       if (!s || !Array.isArray(s.cx)) { alert('단지 설계 파일이 아닙니다.'); return; }
       if (!confirm('현재 진행을 이 파일로 덮어쓸까요?')) return;
       state = withDefaults(s);
+      for (const cx of state.cx) ensureWired(cx);
       state.savedAt = Date.now();
       save();
       $('banner').hidden = true;
