@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>블랙아웃 — 전력망 잇기</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="hud">
+  <div class="hud-item"><b id="hud-day">1일</b></div>
+  <div class="hud-item">⚡ <span id="hud-power">0 / 0</span> MW</div>
+  <div class="hud-item">🔌 전선 <b id="hud-wires">0</b></div>
+  <div class="hud-item hint" id="hud-best"></div>
+</div>
+
+<svg id="world"></svg>
+
+<div id="intro" class="modal">
+  <div class="card">
+    <h1>⚡ 블랙아웃</h1>
+    <p><b>발전소</b>와 <b>도시</b>를 드래그로 이으세요.</p>
+    <p>도시는 계속 자라고, 새 도시가 계속 생깁니다.<br>
+       전기가 끊긴 도시는 <b class="red">붉게</b> 타들어가고,<br>
+       하나라도 완전히 꺼지면 <b class="red">블랙아웃</b> — 끝입니다.</p>
+    <p class="hint">전선은 한정 자원 · 전선을 탭하면 회수 · 며칠마다 보급 선택</p>
+    <button id="btn-start">시작</button>
+  </div>
+</div>
+
+<div id="reward" class="modal" hidden>
+  <div class="card">
+    <h2>📦 보급 도착 — 하나를 고르세요</h2>
+    <div id="reward-opts"></div>
+  </div>
+</div>
+
+<div id="gameover" class="modal" hidden>
+  <div class="card">
+    <h1 class="red">🌑 블랙아웃</h1>
+    <p id="go-summary"></p>
+    <button id="btn-retry">다시 도전</button>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>

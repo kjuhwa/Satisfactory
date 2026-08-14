@@ -32,6 +32,11 @@
 - **빚과 칼** (`quests/`) — **선택형 판타지 로그라이크**. 이 저장소에서 유일하게
   Satisfactory 와 무관한 물건이다. `quests/index.html` 을 열면 실행되고 서버가 필요 없다.
   아래 "빚과 칼" 참고.
+- **블랙아웃** (`blackout/`) — 공장 게임에서 추출한 노드·연결·전력 문법으로 만든
+  **미니 세션 게임** (Mini Metro식). 발전소(출력만)와 자라나는 도시(입력만)를 한정된
+  전선으로 이어 정전을 막는다. 한 판 10분 내외, 드래그 하나로 조작, 폰 우선 설계.
+  며칠마다 보급 3택1(발전소/전선/변전소), 최고 기록은 localStorage.
+  `blackout/index.html` 단독 실행 (데이터 의존 없음).
 - **Item Spawner 모드** (`mods/ItemSpawner/`) — `/give` 채팅 명령어로 아이템을 지급하는
   SML 치트 모드 소스. 빌드 방법은 `mods/ItemSpawner/README.md` 참고.
 
