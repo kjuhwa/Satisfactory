@@ -43,6 +43,15 @@ body {
 .n-city.dark { stroke: var(--bad); }
 .n-plant { fill: #3a3020; stroke: var(--accent); stroke-width: 3; }
 .n-sub { fill: #223042; stroke: var(--wire); stroke-width: 2.5; }
+.n-fac { fill: #1e3630; stroke: #4dd0a5; stroke-width: 3; }
+.n-fac.off { stroke: #38584e; }
+.prod-arc { fill: none; stroke: #4dd0a5; stroke-width: 4; pointer-events: none; }
+.toast {
+  fill: #ffe9a8; font-size: 13.5px; font-weight: 700; text-anchor: middle;
+  pointer-events: none; paint-order: stroke; stroke: rgba(10, 12, 16, .85); stroke-width: 3;
+  animation: trise 1.6s ease-out forwards;
+}
+@keyframes trise { from { opacity: 1; transform: translateY(0); } to { opacity: 0; transform: translateY(-32px); } }
 .n-label { fill: var(--text); font-size: 12px; font-weight: 700; text-anchor: middle; pointer-events: none; }
 .n-sub-label { fill: var(--muted); font-size: 10px; text-anchor: middle; pointer-events: none; }
 .n-icon { font-size: 15px; text-anchor: middle; pointer-events: none; }

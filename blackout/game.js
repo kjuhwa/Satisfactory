@@ -10,6 +10,34 @@ const DAY_SEC = 20;         // 1일 = 20초
 const BLACK_SEC = 12;       // 정전 유예
 const EDGE_CAP = 10;        // 전선 용량 (MW)
 const REWARD_DAYS = 4;      // 보급 주기
+const PROD_SEC = 8;         // 공장: 전력 100%일 때 아이템 1개 생산 시간
+const FAC_INTERVAL = 24;    // 공장 출현 주기 (초)
+const FAC_ITEMS_MAX = 3;    // 공장당 생산 개수 (다 만들면 철수)
+
+/* 공장이 만드는 아이템 — 완성 즉시 어드밴티지로 자동 변환 */
+const FAC_ITEMS = {
+  part: {
+    icon: '⚙', name: '부품', short: '전선+1',
+    apply() { S.wires += 1; return '🔌 전선 +1'; },
+  },
+  batt: {
+    icon: '🔋', name: '전지', short: '도시 진정',
+    apply() {
+      for (const c of S.nodes) if (c.type === 'city') c.black = Math.max(0, c.black - 0.4);
+      return '🔋 정전 게이지 -40%';
+    },
+  },
+  motor: {
+    icon: '🧲', name: '모터', short: '발전+3MW',
+    apply() {
+      const ps = S.nodes.filter(n => n.type === 'plant');
+      const p = ps[Math.floor(Math.random() * ps.length)];
+      p.out += 3;
+      refreshNode(p);
+      return '⚡ 발전소 +3MW';
+    },
+  },
+};
 
 const $ = id => document.getElementById(id);
 const svg = $('world');
@@ -30,6 +58,7 @@ function freshGame() {
     time: 0,
     day: 1,
     spawnT: 0,
+    facT: FAC_INTERVAL * 0.6,
     nextReward: REWARD_DAYS,
     delivered: 0, // 누적 MWh(대략)
     over: false,
@@ -98,8 +127,40 @@ function tick() {
     buildNode(n);
   }
 
+  // 공장 출현 (2일차부터, 동시 최대 2곳)
+  if (S.day >= 2 && S.nodes.filter(n => n.type === 'fac').length < 2) {
+    S.facT += TICK;
+    if (S.facT >= FAC_INTERVAL) {
+      S.facT = 0;
+      const keys = Object.keys(FAC_ITEMS);
+      const n = addNode('fac', {
+        item: keys[Math.floor(Math.random() * keys.length)],
+        need: 5 + Math.floor(S.day / 3),
+        prog: 0, left: FAC_ITEMS_MAX,
+      });
+      buildNode(n);
+      toast(n, '🏭 새 공장!');
+    }
+  }
+
   // 흐름 계산 (최대 유량)
   solveFlow();
+
+  // 공장 생산 — 받은 전력 비율만큼 진행, 완성 즉시 어드밴티지 적용
+  for (const n of [...S.nodes]) {
+    if (n.type !== 'fac') continue;
+    if (n.sat > 0.01) {
+      n.prog += n.sat * TICK / PROD_SEC;
+      if (n.prog >= 1) {
+        n.prog = 0;
+        n.left--;
+        const msg = FAC_ITEMS[n.item].apply();
+        refreshHud();
+        if (n.left <= 0) { retireFactory(n); toast(n, msg + ' · 🏭 철수'); }
+        else toast(n, msg);
+      }
+    }
+  }
 
   // 정전 게이지 · 점수
   for (const n of S.nodes) {
@@ -147,30 +208,43 @@ function solveFlow() {
   }
   const flow = {};
   const residual = (u, v) => (cap[u + '_' + v] || 0) - (flow[u + '_' + v] || 0);
-  for (let guard = 0; guard < 300; guard++) {
-    // BFS 증가 경로
-    const prev = new Array(N).fill(-1);
-    prev[SRC] = SRC;
-    const q = [SRC];
-    while (q.length) {
-      const u = q.shift();
-      for (const v of adj[u]) {
-        if (prev[v] === -1 && residual(u, v) > 1e-9) { prev[v] = u; q.push(v); }
+  const augment = () => {
+    for (let guard = 0; guard < 300; guard++) {
+      // BFS 증가 경로
+      const prev = new Array(N).fill(-1);
+      prev[SRC] = SRC;
+      const q = [SRC];
+      while (q.length) {
+        const u = q.shift();
+        for (const v of adj[u]) {
+          if (prev[v] === -1 && residual(u, v) > 1e-9) { prev[v] = u; q.push(v); }
+        }
+      }
+      if (prev[SNK] === -1) break;
+      let aug = Infinity;
+      for (let v = SNK; v !== SRC; v = prev[v]) aug = Math.min(aug, residual(prev[v], v));
+      for (let v = SNK; v !== SRC; v = prev[v]) {
+        const u = prev[v];
+        flow[u + '_' + v] = (flow[u + '_' + v] || 0) + aug;
+        flow[v + '_' + u] = (flow[v + '_' + u] || 0) - aug;
       }
     }
-    if (prev[SNK] === -1) break;
-    let aug = Infinity;
-    for (let v = SNK; v !== SRC; v = prev[v]) aug = Math.min(aug, residual(prev[v], v));
-    for (let v = SNK; v !== SRC; v = prev[v]) {
-      const u = prev[v];
-      flow[u + '_' + v] = (flow[u + '_' + v] || 0) + aug;
-      flow[v + '_' + u] = (flow[v + '_' + u] || 0) - aug;
-    }
+  };
+  augment();
+  // 2차: 공장 싱크를 잔여망에 추가하고 이어서 증강 — 도시로 가던 유량은 줄지 않으므로
+  // 공장은 언제나 도시가 쓰고 남는 전력만 가져간다
+  let hasFac = false;
+  for (const n of S.nodes) {
+    if (n.type === 'fac') { arc(idx.get(n.id), SNK, n.need); hasFac = true; }
   }
+  if (hasFac) augment();
   for (const n of S.nodes) {
     if (n.type === 'city') {
       const got = flow[idx.get(n.id) + '_' + SNK] || 0;
       n.sat = n.demand > 0 ? Math.min(1, got / n.demand) : 1;
+    } else if (n.type === 'fac') {
+      const got = flow[idx.get(n.id) + '_' + SNK] || 0;
+      n.sat = Math.min(1, got / n.need);
     }
   }
   for (const e of S.edges) {
@@ -261,6 +335,8 @@ function buildNode(n) {
     shape = elNS('rect', 'n-plant');
   } else if (n.type === 'sub') {
     shape = elNS('rect', 'n-sub');
+  } else if (n.type === 'fac') {
+    shape = elNS('rect', 'n-fac');
   } else {
     shape = elNS('circle', 'n-city');
   }
@@ -319,6 +395,19 @@ function refreshNode(n) {
     r.icon.setAttribute('x', p.x); r.icon.setAttribute('y', p.y + 6);
     r.label.textContent = n.out + 'MW';
     r.label.setAttribute('x', p.x); r.label.setAttribute('y', p.y + s / 2 + 17);
+  } else if (n.type === 'fac') {
+    const s = 44;
+    const it = FAC_ITEMS[n.item];
+    r.shape.setAttribute('x', p.x - s / 2); r.shape.setAttribute('y', p.y - s / 2);
+    r.shape.setAttribute('width', s); r.shape.setAttribute('height', s);
+    r.shape.setAttribute('rx', 10);
+    r.shape.classList.toggle('off', n.sat < 0.01);
+    r.satArc.setAttribute('class', 'prod-arc');
+    r.satArc.setAttribute('d', arcPath(p.x, p.y, s / 2 + 8, n.prog));
+    r.icon.textContent = '🏭';
+    r.icon.setAttribute('x', p.x); r.icon.setAttribute('y', p.y + 6);
+    r.label.textContent = `${n.need}MW · ${it.icon}→${it.short} ×${n.left}`;
+    r.label.setAttribute('x', p.x); r.label.setAttribute('y', p.y + s / 2 + 19);
   } else {
     const s = 22;
     r.shape.setAttribute('x', p.x - s / 2); r.shape.setAttribute('y', p.y - s / 2);
@@ -329,6 +418,26 @@ function refreshNode(n) {
     r.label.textContent = '변전소';
     r.label.setAttribute('x', p.x); r.label.setAttribute('y', p.y + 26);
   }
+}
+
+/* 공장 철수: 노드 제거, 이어져 있던 전선은 돌려받는다 */
+function retireFactory(n) {
+  const linked = S.edges.filter(e => e.a === n.id || e.b === n.id).length;
+  S.edges = S.edges.filter(e => e.a !== n.id && e.b !== n.id);
+  S.nodes = S.nodes.filter(x => x.id !== n.id);
+  S.wires += linked;
+  buildWorld();
+  refreshHud();
+}
+
+/* 노드 위로 떠오르는 알림 텍스트 */
+function toast(n, text) {
+  const t = elNS('text', 'toast');
+  const p = px(n);
+  t.setAttribute('x', p.x); t.setAttribute('y', p.y - 34);
+  t.textContent = text;
+  svg.append(t);
+  setTimeout(() => t.remove(), 1600);
 }
 
 function refreshWorld() {
