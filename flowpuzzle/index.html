@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no, viewport-fit=cover">
+<title>플로우 — 흐름 퍼즐</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="hud">
+  <button id="btn-levels" class="chip">☰</button>
+  <div class="hud-item"><b id="hud-name">-</b></div>
+  <div class="hud-item">🔌 <span id="hud-wires">0</span></div>
+  <div class="hud-item" id="hud-power-wrap" hidden>⚡ <span id="hud-power">0/0</span></div>
+  <button id="btn-reset" class="chip">↺</button>
+</div>
+
+<div id="goalbar"></div>
+
+<svg id="world"></svg>
+
+<div id="levels" class="modal">
+  <div class="card">
+    <h1>💧 플로우</h1>
+    <p class="hint">소스의 흐름을 섞고 나눠 목표에 채우세요.<br>전선을 적게 쓸수록 별이 늘어납니다.</p>
+    <div id="level-grid"></div>
+  </div>
+</div>
+
+<div id="clear" class="modal" hidden>
+  <div class="card">
+    <h1 id="clear-stars">★★★</h1>
+    <p id="clear-text"></p>
+    <div class="btn-row">
+      <button id="btn-again" class="ghost">다시</button>
+      <button id="btn-next">다음 레벨</button>
+    </div>
+  </div>
+</div>
+
+<script src="game.js"></script>
+</body>
+</html>
