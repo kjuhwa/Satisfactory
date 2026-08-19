@@ -437,8 +437,9 @@ function overviewDiagram(stageInfo, reused, oreUsed) {
   const H = 30 + Math.max(...cols.map(c => c.length)) * ROWH + 6;
   let nodes = '', edges = '', labels = '';
 
-  const edge = (a, b, label, liq, recycle) => {
-    const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2;
+  // 같은 노드에 드나드는 선이 겹치지 않게 출발/도착 지점을 세로로 분산
+  const edge = (a, b, label, liq, recycle, o1, o2) => {
+    const x1 = a.x + NW, y1 = a.y + NH / 2 + (o1 || 0), x2 = b.x, y2 = b.y + NH / 2 + (o2 || 0);
     const col = recycle ? '#6fd68a' : (liq ? BP.pipe : BP.belt);
     const dx = Math.max(34, Math.abs(x2 - x1) / 2);
     edges += `<path d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" fill="none" stroke="${col}" stroke-width="${liq && !recycle ? 3.5 : 2.5}" ${recycle ? 'stroke-dasharray="3 4"' : (liq ? '' : 'stroke-dasharray="6 4"')}/>`;
@@ -469,36 +470,46 @@ function overviewDiagram(stageInfo, reused, oreUsed) {
     nodes += svgIcon(s.item, p.x + 8, p.y + 8, 26);
     nodes += `<text x="${p.x + 42}" y="${p.y + 21}" font-size="10.5" font-weight="700" fill="${BP.bright}">${koOf(s.item)}</text>`;
     nodes += `<text x="${p.x + 42}" y="${p.y + 37}" font-size="10.5" font-weight="700" fill="${BP.accent}">${fmt(s.t.rate)}${unitOf(isLiq(s.item))}</text>`;
-    // 외부 공급 재료
+    // 이 체인 밖에서 가져와야 하는 재료 (다른 매장지·라인에서 벨트/파이프로 끌어옴)
     const exts = s.ml.r.in.filter(([ing]) => ing !== state.res && !stageInfo.some(x => x.item === ing));
     if (exts.length) {
       const outQty = s.ml.r.out.find(o => o[0] === s.item)[1];
       const txt = exts.map(([ing, q]) => `${koOf(ing)} ${fmt(s.t.rate / outQty * q)}`).join(' · ');
-      nodes += `<text x="${p.x + 8}" y="${p.y + 52}" font-size="9" fill="#ffc94d">⤵ 외부: ${txt}</text>`;
+      nodes += `<text x="${p.x + 8}" y="${p.y + 52}" font-size="9" fill="#ffc94d">⤵ 따로 공급: ${txt}</text>`;
     }
     // 기계 아이콘을 대수만큼 겹쳐 그려 다수임이 보이게 (최대 4개 + ×N 숫자 강조)
     const mc = s.ml.count;
     for (let i = 0; i < Math.min(mc, 4); i++) nodes += svgIcon(s.ml.r.machine, p.x + 8 + i * 10, p.y + NH - 34, 22);
     nodes += `<text x="${p.x + 38 + Math.min(mc, 4) * 10}" y="${p.y + NH - 16}" font-size="10" fill="${BP.text}">${s.ml.m.ko} <tspan font-size="12.5" font-weight="700" fill="${BP.accent}">×${mc}</tspan> <tspan font-size="9">· ${fmt(s.ml.clock)}%</tspan></text>`;
   }
-  // 흐름 화살표
+  // 흐름 화살표 — 먼저 목록을 만들고, 노드별 드나드는 개수에 따라 접점을 분산
+  const edgeList = [];
   for (const s of stageInfo) {
     const outQty = s.ml.r.out.find(o => o[0] === s.item)[1];
     for (const [ing, q] of s.ml.r.in) {
       const need = s.t.rate / outQty * q;
       const liq = isLiq(ing);
       const f = flowFor(need, liq);
-      const label = `${fmt(need)}${unitOf(liq)} · Mk.${f.mk}${f.lines > 1 ? '×' + f.lines : ''}`;
-      if (ing === state.res) edge(pos['@ore'], pos[s.item], label, liq);
-      else if (pos[ing]) edge(pos[ing], pos[s.item], label, liq);
+      // 라벨에 재료 이름을 넣어 어느 선이 무엇을 나르는지 명확히
+      const label = `${koOf(ing)} ${fmt(need)}${unitOf(liq)} · Mk.${f.mk}${f.lines > 1 ? '×' + f.lines : ''}`;
+      const from = ing === state.res ? '@ore' : (pos[ing] ? ing : null);
+      if (from) edgeList.push({ from, to: s.item, label, liq, recycle: false });
     }
   }
-  // 부산물 재순환 ♻
   for (const [k, amt] of Object.entries(reused)) {
     if (amt <= 1e-6) continue;
     const prod = stageInfo.find(x => x.ml.r.out.some(o => o[0] === k && o[0] !== x.item));
     const cons = stageInfo.find(x => x.ml.r.in.some(([ing]) => ing === k));
-    if (prod && cons) edge(pos[prod.item], pos[cons.item], `♻ ${koOf(k)} ${fmt(amt)}${unitOf(isLiq(k))}`, isLiq(k), true);
+    if (prod && cons) edgeList.push({ from: prod.item, to: cons.item, label: `♻ ${koOf(k)} ${fmt(amt)}${unitOf(isLiq(k))}`, liq: isLiq(k), recycle: true });
+  }
+  const outN = {}, inN = {}, outSeen = {}, inSeen = {};
+  for (const e of edgeList) { outN[e.from] = (outN[e.from] || 0) + 1; inN[e.to] = (inN[e.to] || 0) + 1; }
+  for (const e of edgeList) {
+    const oi = (outSeen[e.from] = (outSeen[e.from] || 0) + 1) - 1;
+    const ii = (inSeen[e.to] = (inSeen[e.to] || 0) + 1) - 1;
+    const o1 = (oi - (outN[e.from] - 1) / 2) * 16;
+    const o2 = (ii - (inN[e.to] - 1) / 2) * 16;
+    edge(pos[e.from === '@ore' ? '@ore' : e.from], pos[e.to], e.label, e.liq, e.recycle, o1, o2);
   }
   // 넓은 체인은 축소 대신 가로 스크롤 유지 (글씨가 뭉개지지 않게)
   return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 1500)}px">${edges}${nodes}${labels}</svg></div>`;
@@ -693,7 +704,8 @@ function renderResult() {
   if (stageInfo.length) {
     html += `<div class="stage">
       <div class="head"><span class="t">🗺 전체 배치도</span>
-        <span class="hint">채굴 → 목표 한눈에 · 점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 상세 수치는 위 단계 카드</span></div>
+        <span class="hint">채굴 → 목표 한눈에 · 점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span>,
+        <span style="color:#ffc94d">⤵ 따로 공급</span>=이 체인 밖(다른 매장지·라인)에서 끌어올 재료 · 상세 수치는 위 단계 카드</span></div>
       ${overviewDiagram(stageInfo, reused, oreUsed)}
     </div>`;
   }
