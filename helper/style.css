@@ -96,3 +96,20 @@ td .fit { color: var(--good); font-weight: 700; }
   body { font-size: 14px; }
   .stage .head .rate { width: 100%; margin-left: 0; }
 }
+
+.badge.pipe { color: #58a6ff; border-color: #29496b; }
+.badge img { vertical-align: -4px; }
+.fit { color: var(--good); font-weight: 700; }
+
+/* 배치도 (청사진) */
+.bp {
+  overflow-x: auto;
+  background:
+    repeating-linear-gradient(0deg, transparent 0 23px, #2c2720 23px 24px),
+    repeating-linear-gradient(90deg, transparent 0 23px, #2c2720 23px 24px),
+    #1b1813;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 8px 6px;
+}
+.bp svg { display: block; width: 100%; height: auto; }
