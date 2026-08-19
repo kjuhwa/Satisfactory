@@ -42,6 +42,7 @@ let state = {
   noMerge: {},           // item id -> true(합류기 생략, 각자 직결 배치도)
   maxBelt: 6,            // 해금된 벨트 티어
   maxPipe: 2,            // 해금된 파이프 티어
+  auxPurity: {},         // 부수 원자재 매장지 순도 (item id -> impure|normal|pure)
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
@@ -50,6 +51,7 @@ try {
 state.noMerge = state.noMerge || {};
 state.maxBelt = state.maxBelt || 6;
 state.maxPipe = state.maxPipe || 2;
+state.auxPurity = state.auxPurity || {};
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
@@ -431,25 +433,28 @@ function stageDiagramCore(item, ml, rate) {
 
 /* ---------- 부수 원자재 채굴 계획 (정석: 외부 공급 없이 전부 직접 캔다) ----------
  * 체인에 필요한 다른 원자재(석탄·석영·물…)도 채굴기/추출기 대수·클럭으로 계획.
- * 매장지 순도는 알 수 없으므로 "보통" 가정(화면에 명시), 채굴기 Mk는 주 자원과 동일. */
+ * 매장지 순도는 카드에서 선택(state.auxPurity, 기본 보통), 채굴기 Mk는 주 자원과 동일. */
 function auxPlans(ext) {
   const plans = [];
   for (const [id, need] of Object.entries(ext)) {
     if (need <= 1e-6) continue;
     if (!isRaw(id) || id === 'Desc_NitrogenGas_C') { plans.push({ id, need, unplanned: true }); continue; }
     const liq = isLiq(id);
-    let base, pwr, icon, name, assume;
-    if (id === 'Desc_Water_C') { base = 120; pwr = 20; icon = 'Desc_WaterPump_C'; name = '양수기'; assume = ''; }
-    else if (id === 'Desc_LiquidOil_C') { base = 120; pwr = 40; icon = 'Desc_OilPump_C'; name = '원유 추출기'; assume = '순도 보통 가정'; }
+    let base, pwr, icon, name, hasPu = true;
+    if (id === 'Desc_Water_C') { base = 120; pwr = 20; icon = 'Desc_WaterPump_C'; name = '양수기'; hasPu = false; }
+    else if (id === 'Desc_LiquidOil_C') { base = 120; pwr = 40; icon = 'Desc_OilPump_C'; name = '원유 추출기'; }
     else {
       const mk = resKind() === 'miner' ? state.deps[0].mk : 1;
-      base = MINER_BASE[mk]; pwr = MINER_PWR[mk]; icon = `Desc_MinerMk${mk}_C`; name = `채굴기 Mk.${mk}`; assume = '순도 보통 가정';
+      base = MINER_BASE[mk]; pwr = MINER_PWR[mk]; icon = `Desc_MinerMk${mk}_C`; name = `채굴기 Mk.${mk}`;
     }
-    const per = Math.min(base, maxCap(liq));           // 한 대 실효 상한 (출력 포트 1개)
+    const pu = hasPu ? (state.auxPurity[id] || 'normal') : null;
+    const puDef = pu ? PURITY.find(p => p[0] === pu) : null;
+    const eff = base * (puDef ? puDef[2] : 1);         // 순도 반영 원출력
+    const per = Math.min(eff, maxCap(liq));            // 한 대 실효 상한 (출력 포트 1개)
     const count = Math.ceil(need / per - 1e-9);
-    const clock = need / (count * base) * 100;
+    const clock = need / (count * eff) * 100;
     const power = pwr * count * Math.pow(clock / 100, EXP);
-    plans.push({ id, need, liq, count, clock, power, icon, name, assume });
+    plans.push({ id, need, liq, count, clock, power, icon, name, pu, puKo: puDef ? puDef[1] : '' });
   }
   return plans;
 }
@@ -476,7 +481,7 @@ function auxMineCore(pl) {
   if (pl.count > N) s += `<text x="${x0 + N * cell + 4}" y="36" font-size="13" font-weight="700" fill="${BP.text}">… ×${pl.count}</text>`;
   s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(pl.need)}${unitOf(pl.liq)}</text>`;
   s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${pl.count > 1 ? (pl.liq ? ' · 접합 ' + (pl.count - 1) + '곳' : ' · 합류기 ' + (pl.count - 1) + '개') : ''}</text>`;
-  s += `<text x="${x0}" y="${H - 6}" font-size="9.5" fill="#ffc94d">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%${pl.assume ? ' · ' + pl.assume : ''}</text>`;
+  s += `<text x="${x0}" y="${H - 6}" font-size="9.5" fill="#ffc94d">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%${pl.puKo ? ' · 순도 ' + pl.puKo : ''}</text>`;
   return { s, W, H, outPort: { x: W - 180, y: mergeY, liq: pl.liq } };
 }
 
@@ -715,10 +720,12 @@ function renderResult() {
     html += `<div class="stage"><div class="head">${iconImg(pl.id, 26)}<span class="t">${koOf(pl.id)} 채굴·추출</span>
       <span class="rate">${fmt(pl.need)}${unitOf(pl.liq)}</span></div>
       <div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>
-      <div class="mach"><span class="badge good">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%</span>
+      <div class="mach">
+        ${pl.pu ? `<label style="flex-direction:row;align-items:center;gap:6px">순도
+          <select data-auxpu="${pl.id}">${PURITY.map(p => `<option value="${p[0]}" ${pl.pu === p[0] ? 'selected' : ''}>${p[1]} ×${p[2]}</option>`).join('')}</select></label>` : ''}
+        <span class="badge good">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%</span>
         ${flowBadge(pl.need, pl.liq)}
-        <span class="badge">⚡ ${fmt(pl.power)} MW</span>
-        ${pl.assume ? `<span class="badge warn" style="color:var(--warn)">${pl.assume} — 실제 순도에 맞게 클럭 조정</span>` : ''}</div>
+        <span class="badge">⚡ ${fmt(pl.power)} MW</span></div>
     </div>`;
   }
 
@@ -781,6 +788,10 @@ function renderResult() {
   box.querySelectorAll('button[data-nomerge]').forEach(b => b.addEventListener('click', () => {
     const it = b.dataset.nomerge;
     state.noMerge[it] = !state.noMerge[it];
+    update();
+  }));
+  box.querySelectorAll('select[data-auxpu]').forEach(s => s.addEventListener('change', () => {
+    state.auxPurity[s.dataset.auxpu] = s.value;
     update();
   }));
 }
