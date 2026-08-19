@@ -39,11 +39,13 @@ let state = {
   deps: [{ purity: 'normal', mk: 1, clock: 100 }],
   target: null,          // item id
   recipeSel: {},         // item id -> recipe id
+  noMerge: {},           // item id -> true(합류기 생략, 각자 직결 배치도)
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
   if (saved && saved.res) state = Object.assign(state, saved);
 } catch (e) { }
+state.noMerge = state.noMerge || {};
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 ---------- */
@@ -245,7 +247,11 @@ function distGuide(item, ml, rate) {
         html += `. 즉시 균등을 원하면 <b>${nb}대 × ${fmt(c2)}%</b>로 — 균형 트리(분배기 ${t2.count}개: ${t2.desc}) 가능`;
       }
     }
-    html += isLiq(item) ? ` · 출력은 파이프 접합으로 합류</div>` : ` · 모으기: 합류기 ${N - 1}개 일렬</div>`;
+    if (state.noMerge[item]) {
+      html += ` · 출력은 합류기 없이 각 기계에서 ${fmt(rate / N)}${unitOf(isLiq(item))}씩 직결</div>`;
+    } else {
+      html += isLiq(item) ? ` · 출력은 파이프 접합으로 합류</div>` : ` · 모으기: 합류기 ${N - 1}개 일렬</div>`;
+    }
     if (solidIns.length > 1) html += `<div class="tip">↳ 고체 입력이 ${solidIns.length}종이므로 재료마다 벨트·분배를 따로 구성합니다</div>`;
   }
   if (N > 1 && liqIns.length) {
@@ -336,12 +342,21 @@ function stageDiagram(item, ml, rate) {
     }
   });
   // 기계들 — 합류기는 두 번째 기계부터 (첫 기계가 출력 라인의 시작점)
+  const noMerge = N > 1 && !!state.noMerge[item];
+  const outLiqEarly = isLiq(item);
   for (let i = 0; i < drawN; i++) {
     const cx = x0 + i * cell + cell / 2;
     s += `<rect x="${cx - iconS / 2 - 3}" y="${machY - 3}" width="${iconS + 6}" height="${iconS + 6}" rx="6" fill="#2a251d" stroke="${BP.frame}"/>`;
     s += svgIcon(ml.r.machine, cx - iconS / 2, machY, iconS);
-    s += `<line x1="${cx}" y1="${machY + iconS + 3}" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="1.5"/>`;
-    if (i > 0) taps += tapIcon(isLiq(item), 'merge', cx, mergeY);
+    if (noMerge) {
+      // 합류기 생략: 각 기계가 자기 벨트/파이프로 바로 내려보냄
+      const colO = outLiqEarly ? BP.pipe : BP.belt;
+      s += `<line x1="${cx}" y1="${machY + iconS + 3}" x2="${cx}" y2="${mergeY - 2}" stroke="${colO}" stroke-width="${outLiqEarly ? 4 : 2.5}" ${outLiqEarly ? '' : 'stroke-dasharray="6 4"'}/>`;
+      s += `<polygon points="${cx - 4},${mergeY - 2} ${cx + 4},${mergeY - 2} ${cx},${mergeY + 5}" fill="${colO}"/>`;
+    } else {
+      s += `<line x1="${cx}" y1="${machY + iconS + 3}" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="1.5"/>`;
+      if (i > 0) taps += tapIcon(outLiqEarly, 'merge', cx, mergeY);
+    }
   }
   if (N > drawN) {
     const cx = x0 + drawN * cell + 8;
@@ -350,19 +365,26 @@ function stageDiagram(item, ml, rate) {
   // 기계 라벨 (왼쪽)
   s += `<text x="6" y="${machY + iconS / 2 - 2}" font-size="11" font-weight="700" fill="${BP.bright}">${ml.m.ko} ${N}대</text>`;
   s += `<text x="6" y="${machY + iconS / 2 + 12}" font-size="10" fill="${ml.exact ? '#6fd68a' : BP.text}">각 ${fmt(ml.clock)}%${ml.exact ? ' 딱 ✨' : ''}</text>`;
-  // 출력 합류선
-  const outLiq = isLiq(item);
+  // 출력: 한 줄 합류 또는 각자 직결
+  const outLiq = outLiqEarly;
   const colO = outLiq ? BP.pipe : BP.belt;
-  const lastX = x0 + (drawN - 1) * cell + cell / 2;
-  const f = flowFor(rate, outLiq);
-  s += `<line x1="${x0 + cell / 2}" y1="${mergeY}" x2="${W - 195}" y2="${mergeY}" stroke="${colO}" stroke-width="${outLiq ? 5 : 3}" ${outLiq ? '' : 'stroke-dasharray="7 4"'}/>`;
-  s += `<polygon points="${W - 195},${mergeY - 5} ${W - 185},${mergeY} ${W - 195},${mergeY + 5}" fill="${colO}"/>`;
-  s += taps;
-  if (N > 1) s += `<text x="${W - 8}" y="11" text-anchor="end" font-size="9.5" fill="${BP.text}">매니폴드 기준 배치도</text>`;
-  s += svgIcon(item, W - 178, mergeY - 22, 18);
-  s += `<text x="${W - 156}" y="${mergeY - 8}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(rate)}${unitOf(outLiq)}</text>`;
-  s += `<text x="${W - 178}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${N > 1 ? (outLiq ? ' · 접합' : ' · 합류기 ' + (N - 1) + '개') : ''}</text>`;
-  void lastX;
+  if (noMerge) {
+    const per = rate / N;
+    const fp = flowFor(per, outLiq);
+    const midX = x0 + (drawN - 1) * cell / 2 + cell / 2;
+    s += taps;
+    s += `<text x="${midX}" y="${mergeY + 17}" text-anchor="middle" font-size="10.5" fill="${BP.bright}">각 <tspan font-weight="700" fill="${BP.accent}">${fmt(per)}${unitOf(outLiq)}</tspan> · ${flowName(fp)} — 다음 공정 기계·저장고에 각자 직결 (합류기 0개)</text>`;
+    if (N > 1) s += `<text x="${W - 8}" y="11" text-anchor="end" font-size="9.5" fill="${BP.text}">매니폴드 기준 배치도 · 합류기 생략</text>`;
+  } else {
+    const f = flowFor(rate, outLiq);
+    s += `<line x1="${x0 + cell / 2}" y1="${mergeY}" x2="${W - 195}" y2="${mergeY}" stroke="${colO}" stroke-width="${outLiq ? 5 : 3}" ${outLiq ? '' : 'stroke-dasharray="7 4"'}/>`;
+    s += `<polygon points="${W - 195},${mergeY - 5} ${W - 185},${mergeY} ${W - 195},${mergeY + 5}" fill="${colO}"/>`;
+    s += taps;
+    if (N > 1) s += `<text x="${W - 8}" y="11" text-anchor="end" font-size="9.5" fill="${BP.text}">매니폴드 기준 배치도</text>`;
+    s += svgIcon(item, W - 178, mergeY - 22, 18);
+    s += `<text x="${W - 156}" y="${mergeY - 8}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(rate)}${unitOf(outLiq)}</text>`;
+    s += `<text x="${W - 178}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${N > 1 ? (outLiq ? ' · 접합' : ' · 합류기 ' + (N - 1) + '개') : ''}</text>`;
+  }
   return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 780)}px">${s}</svg></div>`;
 }
 
@@ -538,7 +560,8 @@ function renderResult() {
       <div class="mach">
         <span class="badge ${ml.exact ? 'good' : ''}">${ml.count}대 × ${fmt(ml.clock)}%${ml.exact ? ' 딱 맞음 ✨' : ''}</span>
         ${flowBadge(t.rate, isLiq(item))}
-        <span class="badge">⚡ ${fmt(ml.power)} MW</span></div>
+        <span class="badge">⚡ ${fmt(ml.power)} MW</span>
+        ${ml.count > 1 ? `<button class="ghost mini" data-nomerge="${item}">${state.noMerge[item] ? '↩ 한 줄로 모으기' : '합류기 생략 보기'}</button>` : ''}</div>
       ${distGuide(item, ml, t.rate)}
       ${ml.alt}
     </div>`;
@@ -547,6 +570,11 @@ function renderResult() {
   box.innerHTML = html;
   box.querySelectorAll('select[data-item]').forEach(s => s.addEventListener('change', () => {
     state.recipeSel[s.dataset.item] = s.value;
+    update();
+  }));
+  box.querySelectorAll('button[data-nomerge]').forEach(b => b.addEventListener('click', () => {
+    const it = b.dataset.nomerge;
+    state.noMerge[it] = !state.noMerge[it];
     update();
   }));
 }
