@@ -145,12 +145,22 @@ function orePerUnit(item, visiting = new Set()) {
   return acc;
 }
 
-function buildChain(targetRate) {
+function buildChain(targetRate, credits) {
   const totals = {};   // item -> {rate, depth}
   const ext = {};      // 외부 공급 item -> rate
   const bypro = {};    // 부산물 item -> rate
+  const reused = {};   // 부산물 재사용량 item -> rate
+  const creditLeft = Object.assign({}, credits || {});
   let oreUsed = 0;
   const walk = (item, rate, depth, visiting) => {
+    // 부산물 크레딧부터 소진 (목표 자체는 제외 — 목표량 의미 유지)
+    if (depth > 0 && creditLeft[item] > 1e-12) {
+      const u = Math.min(rate, creditLeft[item]);
+      creditLeft[item] -= u;
+      reused[item] = (reused[item] || 0) + u;
+      rate -= u;
+      if (rate <= 1e-12) return;
+    }
     if (item === state.res) { oreUsed += rate; return; }
     if (isRaw(item) || !byOut[item] || visiting.has(item)) { ext[item] = (ext[item] || 0) + rate; return; }
     const t = totals[item] || (totals[item] = { rate: 0, depth: 0 });
@@ -164,7 +174,29 @@ function buildChain(targetRate) {
     visiting.delete(item);
   };
   walk(state.target, targetRate, 0, new Set());
-  return { totals, ext, bypro, oreUsed };
+  return { totals, ext, bypro, reused, oreUsed };
+}
+
+/* 부산물 재사용 + 채굴량 완전 소진을 함께 만족할 때까지 반복 수렴 */
+function solveChain(E, orePer) {
+  let targetRate = E / orePer;
+  let credits = {};
+  let chain = null;
+  for (let it = 0; it < 10; it++) {
+    chain = buildChain(targetRate, credits);
+    let stable = true;
+    for (const k of new Set([...Object.keys(chain.bypro), ...Object.keys(credits)])) {
+      if (Math.abs((chain.bypro[k] || 0) - (credits[k] || 0)) > 1e-6) { stable = false; break; }
+    }
+    credits = chain.bypro;
+    if (chain.oreUsed > 1e-9 && Math.abs(chain.oreUsed - E) > 1e-6) {
+      targetRate *= E / chain.oreUsed;
+      stable = false;
+    }
+    if (stable) break;
+  }
+  chain.targetRate = targetRate;
+  return chain;
 }
 
 /* ---------- 분배기 (실게임: 분배기 1→3, 합류기 3→1) ----------
@@ -203,10 +235,10 @@ function distGuide(item, ml, rate) {
     html += '<div class="tip">🔀 벨트 1줄 → ' + N + '대 나누기: ';
     if (tree) {
       html += `<b>균형 트리</b> — 분배기 ${tree.count}개 (${tree.desc}) → 즉시 각 ${fmt(per)}/분 균등. ` +
-        `또는 매니폴드(분배기 ${N}개 일렬) — 간단하지만 예열 필요`;
+        `또는 매니폴드(분배기 ${N - 1}개 일렬, 마지막 기계는 벨트 끝 직결) — 간단하지만 예열 필요`;
     } else {
       const nb = nextBalanced(N);
-      html += `<b>매니폴드</b> — 분배기 ${N}개 일렬 (${N}대는 2·3 곱이 아니라 균형 트리 불가)`;
+      html += `<b>매니폴드</b> — 분배기 ${N - 1}개 일렬, 마지막 기계는 벨트 끝 직결 (${N}대는 2·3 곱이 아니라 균형 트리 불가)`;
       if (nb) {
         const c2 = rate / (nb * ml.per) * 100;
         const t2 = splitTree(nb);
@@ -227,8 +259,17 @@ const BP = {
   belt: '#c9a97e', pipe: '#58a6ff', drop: '#57503f', frame: '#3a332a',
   text: '#9a917f', bright: '#e8e2d8', accent: '#fa9549',
 };
+const IC_SPLIT = 'Desc_ConveyorAttachmentSplitter_C';
+const IC_MERGE = 'Desc_ConveyorAttachmentMerger_C';
+const IC_JUNC = 'Desc_PipelineJunction_Cross_C';
 function svgIcon(id, x, y, s) {
   return `<image href="../game/icons/${id}.png" x="${x}" y="${y}" width="${s}" height="${s}"/>`;
+}
+/* 라인 위 분기/합류 지점: 액체는 접합, 고체는 분배기/합류기 실물 아이콘 */
+function tapIcon(liq, kind, cx, cy) {
+  const id = liq ? IC_JUNC : (kind === 'split' ? IC_SPLIT : IC_MERGE);
+  return `<rect x="${cx - 9}" y="${cy - 9}" width="18" height="18" rx="4" fill="#241f18" stroke="${BP.frame}"/>` +
+    svgIcon(id, cx - 8, cy - 8, 16);
 }
 
 /* 추출 배치도: 추출기들 → 합류 한 줄 */
@@ -239,7 +280,7 @@ function mineDiagram() {
   const cell = 96, x0 = 20;
   const W = Math.max(x0 + N * cell + 250, 560), H = 148;
   const mergeY = 112;
-  let s = '';
+  let s = '', taps = '';
   deps.forEach((d, i) => {
     const cx = x0 + i * cell + cell / 2;
     const m = depMachine(d);
@@ -249,9 +290,7 @@ function mineDiagram() {
     s += `<text x="${cx}" y="66" text-anchor="middle" font-size="10" fill="${BP.text}">${pu}${m.name}${d.clock !== 100 ? ' ' + fmt(d.clock) + '%' : ''}</text>`;
     s += `<text x="${cx}" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="${BP.bright}">${fmt(depRate(d))}${unitOf(liq)}</text>`;
     s += `<line x1="${cx}" y1="84" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="2"/>`;
-    if (N > 1) s += liq
-      ? `<circle cx="${cx}" cy="${mergeY}" r="4" fill="${BP.pipe}"/>`
-      : `<rect x="${cx - 5}" y="${mergeY - 5}" width="10" height="10" fill="${BP.bright}" rx="2"/>`;
+    if (N > 1 && i > 0) taps += tapIcon(liq, 'merge', cx, mergeY);  // 첫 대는 라인 시작점(직결)
   });
   const lineX1 = x0 + cell / 2, lineX2 = x0 + (N - 1) * cell + cell / 2;
   const col = liq ? BP.pipe : BP.belt;
@@ -260,6 +299,7 @@ function mineDiagram() {
   s += `<line x1="${lineX1}" y1="${mergeY}" x2="${lineX2 + 40}" y2="${mergeY}" stroke="${col}" stroke-width="${liq ? 5 : 3}" ${liq ? '' : 'stroke-dasharray="7 4"'}/>`;
   s += `<line x1="${lineX2 + 40}" y1="${mergeY}" x2="${W - 190}" y2="${mergeY}" stroke="${col}" stroke-width="${liq ? 5 : 3}" ${liq ? '' : 'stroke-dasharray="7 4"'}/>`;
   s += `<polygon points="${W - 190},${mergeY - 5} ${W - 180},${mergeY} ${W - 190},${mergeY + 5}" fill="${col}"/>`;
+  s += taps;
   s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">합계 ${fmt(E)}${unitOf(liq)}</text>`;
   s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${N > 1 ? (liq ? ' · 접합 ' + (N - 1) + '곳' : ' · 합류기 ' + (N - 1) + '개') : ''}</text>`;
   return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 780)}px">${s}</svg></div>`;
@@ -280,7 +320,8 @@ function stageDiagram(item, ml, rate) {
   const mergeY = machY + iconS + 22;
   const W = Math.max(x0 + drawN * cell + 205, 620), H = mergeY + 30;
   let s = '';
-  // 입력 라인들
+  // 입력 라인들 — 분배기는 앞쪽 N-1대에만, 마지막 기계는 벨트 끝 직결
+  let taps = '';
   ins.forEach((inp, k) => {
     const y = inTop + k * inGap;
     const col = inp.liq ? BP.pipe : BP.belt;
@@ -289,22 +330,18 @@ function stageDiagram(item, ml, rate) {
     s += `<line x1="${x0 - 26}" y1="${y}" x2="${lastX}" y2="${y}" stroke="${col}" stroke-width="${inp.liq ? 4 : 2.5}" ${inp.liq ? '' : 'stroke-dasharray="6 4"'}/>`;
     for (let i = 0; i < drawN; i++) {
       const cx = x0 + i * cell + cell / 2;
-      s += inp.liq
-        ? `<circle cx="${cx}" cy="${y}" r="3.5" fill="${BP.pipe}"/>`
-        : `<rect x="${cx - 4}" y="${y - 4}" width="8" height="8" fill="${BP.bright}" rx="1.5"/>`;
       s += `<line x1="${cx}" y1="${y}" x2="${cx}" y2="${machY}" stroke="${BP.drop}" stroke-width="1.5"/>`;
+      const isEnd = i === drawN - 1 && drawN === N;   // 마지막 기계 = 라인 끝 직결
+      if (!isEnd) taps += tapIcon(inp.liq, 'split', cx, y);
     }
   });
-  // 기계들
+  // 기계들 — 합류기는 두 번째 기계부터 (첫 기계가 출력 라인의 시작점)
   for (let i = 0; i < drawN; i++) {
     const cx = x0 + i * cell + cell / 2;
     s += `<rect x="${cx - iconS / 2 - 3}" y="${machY - 3}" width="${iconS + 6}" height="${iconS + 6}" rx="6" fill="#2a251d" stroke="${BP.frame}"/>`;
     s += svgIcon(ml.r.machine, cx - iconS / 2, machY, iconS);
     s += `<line x1="${cx}" y1="${machY + iconS + 3}" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="1.5"/>`;
-    const outLiq = isLiq(item);
-    s += outLiq
-      ? `<circle cx="${cx}" cy="${mergeY}" r="3.5" fill="${BP.pipe}"/>`
-      : `<rect x="${cx - 4}" y="${mergeY - 4}" width="8" height="8" fill="${BP.bright}" rx="1.5"/>`;
+    if (i > 0) taps += tapIcon(isLiq(item), 'merge', cx, mergeY);
   }
   if (N > drawN) {
     const cx = x0 + drawN * cell + 8;
@@ -320,6 +357,8 @@ function stageDiagram(item, ml, rate) {
   const f = flowFor(rate, outLiq);
   s += `<line x1="${x0 + cell / 2}" y1="${mergeY}" x2="${W - 195}" y2="${mergeY}" stroke="${colO}" stroke-width="${outLiq ? 5 : 3}" ${outLiq ? '' : 'stroke-dasharray="7 4"'}/>`;
   s += `<polygon points="${W - 195},${mergeY - 5} ${W - 185},${mergeY} ${W - 195},${mergeY + 5}" fill="${colO}"/>`;
+  s += taps;
+  if (N > 1) s += `<text x="${W - 8}" y="11" text-anchor="end" font-size="9.5" fill="${BP.text}">매니폴드 기준 배치도</text>`;
   s += svgIcon(item, W - 178, mergeY - 22, 18);
   s += `<text x="${W - 156}" y="${mergeY - 8}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(rate)}${unitOf(outLiq)}</text>`;
   s += `<text x="${W - 178}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${N > 1 ? (outLiq ? ' · 접합' : ' · 합류기 ' + (N - 1) + '개') : ''}</text>`;
@@ -450,20 +489,27 @@ function renderResult() {
     box.innerHTML = `<div class="rsum">⚠ 현재 선택된 레시피 조합으로는 <b>${koOf(state.target)}</b> 생산에 <b>${koOf(state.res)}</b>이(가) 쓰이지 않습니다. 단계별 레시피를 바꿔 보세요.</div>`;
     return;
   }
-  const targetRate = E / unit.ore;
-  const { totals, ext, bypro, oreUsed } = buildChain(targetRate);
+  const { totals, ext, bypro, reused, oreUsed, targetRate } = solveChain(E, unit.ore);
 
   // 요약
   let html = `<div class="rsum">채굴 <b>${fmt(E)}${unitOf(isLiq(state.res))}</b> (${koOf(state.res)}) 전부 투입 →
     <b>${koOf(state.target)} ${fmt(targetRate)}${unitOf(isLiq(state.target))}</b> 생산.
     아래 세팅이면 <b>어느 기계도 놀지 않습니다</b> (재료가 정확히 맞물림).`;
-  const extList = Object.entries(ext);
+  const extList = Object.entries(ext).filter(([, v]) => v > 1e-6);
   if (extList.length) {
     html += `<br>따로 끌어와야 하는 재료: ` + extList.map(([k, v]) =>
       `<span class="ext">${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}${isLiq(k) ? ' (파이프)' : ''}</span>`).join(' · ');
   }
-  const bpList = Object.entries(bypro).filter(([, v]) => v > 1e-9);
-  if (bpList.length) html += `<br>부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ');
+  const reList = Object.entries(reused).filter(([, v]) => v > 1e-6);
+  if (reList.length) {
+    html += `<br>♻ 부산물 재사용: ` + reList.map(([k, v]) =>
+      `<b>${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}</b>`).join(' · ') +
+      ` <span class="hint">— 부산물을 해당 라인 입력으로 되돌려 잇는 만큼 원자재·기계가 줄어 있습니다` +
+      (reList.some(([k]) => isLiq(k)) ? ' (액체 재순환은 재사용 파이프를 우선 접합으로)' : '') + `</span>`;
+  }
+  const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
+  if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ') +
+    ` <span class="hint">(싱크 소각 또는 저장)</span>`;
   html += `</div>`;
 
   html += `<div class="rsum" style="font-size:13px">🔀 <b>분배기 상식</b> — 일렬로 늘어세운 분배기(매니폴드)는
@@ -475,8 +521,8 @@ function renderResult() {
   html += `<div class="stage"><div class="head">${iconImg(state.res, 26)}<span class="t">채굴 · 추출</span>
     <span class="rate">${fmt(oreUsed)}${unitOf(isLiq(state.res))} 사용</span></div>${mineDiagram()}</div>`;
 
-  // 단계: 깊은 것(원자재 쪽)부터
-  const stages = Object.entries(totals).sort((a, b) => b[1].depth - a[1].depth);
+  // 단계: 깊은 것(원자재 쪽)부터 (재사용으로 0이 된 라인은 제외)
+  const stages = Object.entries(totals).filter(([, t]) => t.rate > 1e-6).sort((a, b) => b[1].depth - a[1].depth);
   let totalPower = state.deps.reduce((s, d) => s + depPower(d), 0);
   for (const [item, t] of stages) {
     const ml = machineLine(item, t.rate);
