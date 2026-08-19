@@ -309,6 +309,10 @@ function tapIcon(liq, kind, cx, cy) {
 
 /* 추출 배치도: 추출기들 → 합류 한 줄 */
 function mineDiagram() {
+  const c = mineDiagramCore();
+  return `<div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>`;
+}
+function mineDiagramCore() {
   const deps = state.deps;
   const liq = isLiq(state.res);
   const N = deps.length;
@@ -337,11 +341,15 @@ function mineDiagram() {
   s += taps;
   s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">합계 ${fmt(E)}${unitOf(liq)}</text>`;
   s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${N > 1 ? (liq ? ' · 접합 ' + (N - 1) + '곳' : ' · 합류기 ' + (N - 1) + '개') : ''}</text>`;
-  return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 780)}px">${s}</svg></div>`;
+  return { s, W, H, outPort: { x: W - 180, y: mergeY, liq } };
 }
 
 /* 공정 한 단계 배치도: 입력 라인(들) → 분배 → 기계 N대 → 합류 → 출력 */
 function stageDiagram(item, ml, rate) {
+  const c = stageDiagramCore(item, ml, rate);
+  return `<div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>`;
+}
+function stageDiagramCore(item, ml, rate) {
   const N = ml.count;
   const drawN = Math.min(N, 24);
   const ins = ml.r.in.map(([ing, q]) => {
@@ -414,105 +422,125 @@ function stageDiagram(item, ml, rate) {
     s += `<text x="${W - 156}" y="${mergeY - 8}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(rate)}${unitOf(outLiq)}</text>`;
     s += `<text x="${W - 178}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${N > 1 ? (outLiq ? ' · 접합' : ' · 합류기 ' + (N - 1) + '개') : ''}</text>`;
   }
-  return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 780)}px">${s}</svg></div>`;
+  const inPorts = ins.map((inp, k) => ({ ing: inp.ing, x: x0 - 26, y: inTop + k * inGap, liq: inp.liq }));
+  const outPort = noMerge
+    ? { x: x0 + (drawN - 1) * cell / 2 + cell / 2, y: mergeY + 8, liq: outLiq }
+    : { x: W - 185, y: mergeY, liq: outLiq };
+  return { s, W, H, inPorts, outPort };
 }
 
-/* ---------- 전체 배치도 (조감도) ----------
- * 채굴 → 단계 → 목표를 한 장에: 깊이별 열 배치, 벨트(점선)/파이프(파랑) 화살표,
- * 부산물 재순환은 ♻ 초록 점선으로 표시 */
-function overviewDiagram(stageInfo, reused, oreUsed) {
-  const NW = 174, NH = 96, COLW = 214, ROWH = 118;
-  const maxDepth = Math.max(0, ...stageInfo.map(s => s.t.depth));
-  const depthCol = d => (maxDepth + 1) - d;          // 광석=0열, 목표=마지막 열
-  const cols = [];                                    // colIdx -> [노드들]
-  const put = (col, node) => { (cols[col] = cols[col] || []).push(node); };
-  put(0, { kind: 'ore' });
-  for (const s of stageInfo) put(depthCol(s.t.depth), { kind: 'stage', s });
-  const pos = {};
-  cols.forEach((list, ci) => list.forEach((n, ri) => {
-    const p = { x: 14 + ci * COLW, y: 30 + ri * ROWH };
-    if (n.kind === 'ore') pos['@ore'] = p; else pos[n.s.item] = p;
-  }));
-  const W = 14 + cols.length * COLW + 10;
-  const H = 30 + Math.max(...cols.map(c => c.length)) * ROWH + 6;
-  let nodes = '', edges = '', labels = '';
-
-  // 같은 노드에 드나드는 선이 겹치지 않게 출발/도착 지점을 세로로 분산
-  const edge = (a, b, label, liq, recycle, o1, o2) => {
-    const x1 = a.x + NW, y1 = a.y + NH / 2 + (o1 || 0), x2 = b.x, y2 = b.y + NH / 2 + (o2 || 0);
-    const col = recycle ? '#6fd68a' : (liq ? BP.pipe : BP.belt);
-    const dx = Math.max(34, Math.abs(x2 - x1) / 2);
-    edges += `<path d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" fill="none" stroke="${col}" stroke-width="${liq && !recycle ? 3.5 : 2.5}" ${recycle ? 'stroke-dasharray="3 4"' : (liq ? '' : 'stroke-dasharray="6 4"')}/>`;
-    edges += `<polygon points="${x2 - 7},${y2 - 4} ${x2},${y2} ${x2 - 7},${y2 + 4}" fill="${col}"/>`;
-    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 6;
-    labels += `<text x="${mx}" y="${my}" text-anchor="middle" font-size="9.5" font-weight="700" fill="${recycle ? '#6fd68a' : BP.bright}" paint-order="stroke" stroke="#1b1813" stroke-width="3">${label}</text>`;
-  };
-  const nodeBox = (p, accent) =>
-    `<rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="10" fill="#241f18" stroke="${accent ? BP.accent : BP.frame}" stroke-width="${accent ? 2 : 1.5}"/>`;
-
-  // 광석 노드
-  {
-    const p = pos['@ore'];
-    nodes += nodeBox(p);
-    nodes += svgIcon(state.res, p.x + 8, p.y + 8, 26);
-    nodes += `<text x="${p.x + 42}" y="${p.y + 21}" font-size="10.5" font-weight="700" fill="${BP.bright}">${koOf(state.res)}</text>`;
-    nodes += `<text x="${p.x + 42}" y="${p.y + 37}" font-size="10.5" font-weight="700" fill="${BP.accent}">${fmt(oreUsed)}${unitOf(isLiq(state.res))}</text>`;
-    const m = depMachine(state.deps[0]);
-    const dn = state.deps.length;
-    for (let i = 0; i < Math.min(dn, 4); i++) nodes += svgIcon(m.icon, p.x + 8 + i * 10, p.y + NH - 34, 22);
-    nodes += `<text x="${p.x + 38 + Math.min(dn, 4) * 10}" y="${p.y + NH - 16}" font-size="10" fill="${BP.text}">${m.name} <tspan font-size="12.5" font-weight="700" fill="${BP.accent}">×${dn}</tspan></text>`;
-  }
-  // 단계 노드
-  for (const s of stageInfo) {
-    const p = pos[s.item];
-    const isTarget = s.item === state.target;
-    nodes += nodeBox(p, isTarget);
-    nodes += svgIcon(s.item, p.x + 8, p.y + 8, 26);
-    nodes += `<text x="${p.x + 42}" y="${p.y + 21}" font-size="10.5" font-weight="700" fill="${BP.bright}">${koOf(s.item)}</text>`;
-    nodes += `<text x="${p.x + 42}" y="${p.y + 37}" font-size="10.5" font-weight="700" fill="${BP.accent}">${fmt(s.t.rate)}${unitOf(isLiq(s.item))}</text>`;
-    // 이 체인 밖에서 가져와야 하는 재료 (다른 매장지·라인에서 벨트/파이프로 끌어옴)
-    const exts = s.ml.r.in.filter(([ing]) => ing !== state.res && !stageInfo.some(x => x.item === ing));
-    if (exts.length) {
-      const outQty = s.ml.r.out.find(o => o[0] === s.item)[1];
-      const txt = exts.map(([ing, q]) => `${koOf(ing)} ${fmt(s.t.rate / outQty * q)}`).join(' · ');
-      nodes += `<text x="${p.x + 8}" y="${p.y + 52}" font-size="9" fill="#ffc94d">⤵ 따로 공급: ${txt}</text>`;
+/* ---------- 부수 원자재 채굴 계획 (정석: 외부 공급 없이 전부 직접 캔다) ----------
+ * 체인에 필요한 다른 원자재(석탄·석영·물…)도 채굴기/추출기 대수·클럭으로 계획.
+ * 매장지 순도는 알 수 없으므로 "보통" 가정(화면에 명시), 채굴기 Mk는 주 자원과 동일. */
+function auxPlans(ext) {
+  const plans = [];
+  for (const [id, need] of Object.entries(ext)) {
+    if (need <= 1e-6) continue;
+    if (!isRaw(id) || id === 'Desc_NitrogenGas_C') { plans.push({ id, need, unplanned: true }); continue; }
+    const liq = isLiq(id);
+    let base, pwr, icon, name, assume;
+    if (id === 'Desc_Water_C') { base = 120; pwr = 20; icon = 'Desc_WaterPump_C'; name = '양수기'; assume = ''; }
+    else if (id === 'Desc_LiquidOil_C') { base = 120; pwr = 40; icon = 'Desc_OilPump_C'; name = '원유 추출기'; assume = '순도 보통 가정'; }
+    else {
+      const mk = resKind() === 'miner' ? state.deps[0].mk : 1;
+      base = MINER_BASE[mk]; pwr = MINER_PWR[mk]; icon = `Desc_MinerMk${mk}_C`; name = `채굴기 Mk.${mk}`; assume = '순도 보통 가정';
     }
-    // 기계 아이콘을 대수만큼 겹쳐 그려 다수임이 보이게 (최대 4개 + ×N 숫자 강조)
-    const mc = s.ml.count;
-    for (let i = 0; i < Math.min(mc, 4); i++) nodes += svgIcon(s.ml.r.machine, p.x + 8 + i * 10, p.y + NH - 34, 22);
-    nodes += `<text x="${p.x + 38 + Math.min(mc, 4) * 10}" y="${p.y + NH - 16}" font-size="10" fill="${BP.text}">${s.ml.m.ko} <tspan font-size="12.5" font-weight="700" fill="${BP.accent}">×${mc}</tspan> <tspan font-size="9">· ${fmt(s.ml.clock)}%</tspan></text>`;
+    const per = Math.min(base, maxCap(liq));           // 한 대 실효 상한 (출력 포트 1개)
+    const count = Math.ceil(need / per - 1e-9);
+    const clock = need / (count * base) * 100;
+    const power = pwr * count * Math.pow(clock / 100, EXP);
+    plans.push({ id, need, liq, count, clock, power, icon, name, assume });
   }
-  // 흐름 화살표 — 먼저 목록을 만들고, 노드별 드나드는 개수에 따라 접점을 분산
-  const edgeList = [];
+  return plans;
+}
+
+/* 부수 원자재 채굴 배치도 (작은 추출 섹션) */
+function auxMineCore(pl) {
+  const N = Math.min(pl.count, 10);
+  const cell = 78, x0 = 18, mergeY = 92, H = 124;
+  const W = Math.max(x0 + N * cell + 250, 560);
+  let s = '', taps = '';
+  for (let i = 0; i < N; i++) {
+    const cx = x0 + i * cell + cell / 2;
+    s += svgIcon(pl.icon, cx - 19, 4, 38);
+    s += `<text x="${cx}" y="${56}" text-anchor="middle" font-size="10" font-weight="700" fill="${BP.bright}">${fmt(pl.need / pl.count)}${unitOf(pl.liq)}</text>`;
+    s += `<line x1="${cx}" y1="60" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="2"/>`;
+    if (pl.count > 1 && i > 0) taps += tapIcon(pl.liq, 'merge', cx, mergeY);
+  }
+  const col = pl.liq ? BP.pipe : BP.belt;
+  const f = flowFor(pl.need, pl.liq);
+  const x1 = x0 + cell / 2;
+  s += `<line x1="${x1}" y1="${mergeY}" x2="${W - 190}" y2="${mergeY}" stroke="${col}" stroke-width="${pl.liq ? 5 : 3}" ${pl.liq ? '' : 'stroke-dasharray="7 4"'}/>`;
+  s += `<polygon points="${W - 190},${mergeY - 5} ${W - 180},${mergeY} ${W - 190},${mergeY + 5}" fill="${col}"/>`;
+  s += taps;
+  if (pl.count > N) s += `<text x="${x0 + N * cell + 4}" y="36" font-size="13" font-weight="700" fill="${BP.text}">… ×${pl.count}</text>`;
+  s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(pl.need)}${unitOf(pl.liq)}</text>`;
+  s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${pl.count > 1 ? (pl.liq ? ' · 접합 ' + (pl.count - 1) + '곳' : ' · 합류기 ' + (pl.count - 1) + '개') : ''}</text>`;
+  s += `<text x="${x0}" y="${H - 6}" font-size="9.5" fill="#ffc94d">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%${pl.assume ? ' · ' + pl.assume : ''}</text>`;
+  return { s, W, H, outPort: { x: W - 180, y: mergeY, liq: pl.liq } };
+}
+
+/* ---------- 전체 배치도 (합성) ----------
+ * 위에 개별로 그린 채굴/단계 배치도를 그대로 세로로 이어 붙이고,
+ * 단계 사이를 실제 벨트/파이프 연결선(오른쪽 레인 경유)으로 잇는다. */
+function composedDiagram(stageInfo, reused, oreUsed, plans) {
+  const GAP = 46;
+  const secs = [];
+  const mine = mineDiagramCore();
+  secs.push({ key: '@ore', title: `${koOf(state.res)} 채굴 · ${fmt(oreUsed)}${unitOf(isLiq(state.res))}`, core: mine, item: state.res });
+  for (const pl of (plans || []).filter(p => !p.unplanned)) {
+    secs.push({ key: pl.id, title: `${koOf(pl.id)} 채굴·추출 · ${fmt(pl.need)}${unitOf(pl.liq)}`, core: auxMineCore(pl), item: pl.id });
+  }
   for (const s of stageInfo) {
-    const outQty = s.ml.r.out.find(o => o[0] === s.item)[1];
-    for (const [ing, q] of s.ml.r.in) {
-      const need = s.t.rate / outQty * q;
-      const liq = isLiq(ing);
-      const f = flowFor(need, liq);
-      // 라벨에 재료 이름을 넣어 어느 선이 무엇을 나르는지 명확히
-      const label = `${koOf(ing)} ${fmt(need)}${unitOf(liq)} · Mk.${f.mk}${f.lines > 1 ? '×' + f.lines : ''}`;
-      const from = ing === state.res ? '@ore' : (pos[ing] ? ing : null);
-      if (from) edgeList.push({ from, to: s.item, label, liq, recycle: false });
+    secs.push({ key: s.item, title: `${koOf(s.item)} · ${fmt(s.t.rate)}${unitOf(isLiq(s.item))}`, core: stageDiagramCore(s.item, s.ml, s.t.rate), item: s.item, info: s });
+  }
+  const maxW = Math.max(...secs.map(x => x.core.W));
+  // 섹션 배치 (세로 스택) + 절대 좌표 포트 기록
+  let y = 8, body = '';
+  for (const sec of secs) {
+    sec.y0 = y + 20;
+    body += `<text x="8" y="${y + 12}" font-size="11.5" font-weight="700" fill="${BP.accent}">▼ ${sec.title}</text>`;
+    body += `<g transform="translate(0, ${sec.y0})">${sec.core.s}</g>`;
+    y = sec.y0 + sec.core.H + GAP;
+  }
+  // 연결선: 생산 섹션 출력 → (오른쪽 레인) → 소비 섹션 입력
+  const conns = [];
+  for (const sec of secs) {
+    if (!sec.info) continue;
+    for (const p of sec.core.inPorts) {
+      const src = secs.find(x => x.item === p.ing && x !== sec);
+      if (src) conns.push({ src, dst: sec, port: p, recycle: false, label: koOf(p.ing) });
     }
   }
   for (const [k, amt] of Object.entries(reused)) {
     if (amt <= 1e-6) continue;
-    const prod = stageInfo.find(x => x.ml.r.out.some(o => o[0] === k && o[0] !== x.item));
-    const cons = stageInfo.find(x => x.ml.r.in.some(([ing]) => ing === k));
-    if (prod && cons) edgeList.push({ from: prod.item, to: cons.item, label: `♻ ${koOf(k)} ${fmt(amt)}${unitOf(isLiq(k))}`, liq: isLiq(k), recycle: true });
+    const prod = secs.find(x => x.info && x.info.ml.r.out.some(o => o[0] === k && o[0] !== x.item));
+    const cons = secs.find(x => x.info && x.core.inPorts.some(pt => pt.ing === k));
+    if (prod && cons) {
+      const port = cons.core.inPorts.find(pt => pt.ing === k);
+      conns.push({ src: prod, dst: cons, port, recycle: true, label: `♻ ${koOf(k)} ${fmt(amt)}${unitOf(isLiq(k))}` });
+    }
   }
-  const outN = {}, inN = {}, outSeen = {}, inSeen = {};
-  for (const e of edgeList) { outN[e.from] = (outN[e.from] || 0) + 1; inN[e.to] = (inN[e.to] || 0) + 1; }
-  for (const e of edgeList) {
-    const oi = (outSeen[e.from] = (outSeen[e.from] || 0) + 1) - 1;
-    const ii = (inSeen[e.to] = (inSeen[e.to] || 0) + 1) - 1;
-    const o1 = (oi - (outN[e.from] - 1) / 2) * 16;
-    const o2 = (ii - (inN[e.to] - 1) / 2) * 16;
-    edge(pos[e.from === '@ore' ? '@ore' : e.from], pos[e.to], e.label, e.liq, e.recycle, o1, o2);
+  // 아이템별 오른쪽 레인 배정
+  const lanes = new Map();
+  for (const c of conns) if (!lanes.has(c.src.key)) lanes.set(c.src.key, lanes.size);
+  const laneX = i => maxW + 26 + i * 20;
+  const W = maxW + 40 + lanes.size * 20 + 130;
+  let wires = '';
+  for (const c of conns) {
+    const o = c.src.core.outPort;
+    const ox = o.x, oy = c.src.y0 + o.y;
+    const ix = c.port.x, iy = c.dst.y0 + c.port.y;
+    const lx = laneX(lanes.get(c.src.key));
+    const gy = c.dst.y0 - 12 - (c.dst.core.inPorts.indexOf(c.port)) * 8;   // 소비 섹션 위 빈틈에서 가로 이동
+    const col = c.recycle ? '#6fd68a' : (c.port.liq ? BP.pipe : BP.belt);
+    const dash = c.recycle ? 'stroke-dasharray="3 4"' : (c.port.liq ? '' : 'stroke-dasharray="7 5"');
+    wires += `<path d="M ${ox} ${oy} H ${lx} V ${gy} H ${ix - 10} V ${iy} H ${ix}" fill="none" stroke="${col}" stroke-width="${c.port.liq && !c.recycle ? 4 : 2.5}" ${dash} opacity=".9"/>`;
+    wires += `<polygon points="${ix - 7},${iy - 4} ${ix},${iy} ${ix - 7},${iy + 4}" fill="${col}"/>`;
+    wires += `<text x="${lx - 6}" y="${gy - 4}" text-anchor="end" font-size="9.5" font-weight="700" fill="${c.recycle ? '#6fd68a' : BP.bright}" paint-order="stroke" stroke="#1b1813" stroke-width="3">${c.label} ⟶</text>`;
   }
-  // 넓은 체인은 축소 대신 가로 스크롤 유지 (글씨가 뭉개지지 않게)
-  return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 1500)}px">${edges}${nodes}${labels}</svg></div>`;
+  const H = y - GAP + 14;
+  return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 1200)}px">${wires}${body}</svg></div>`;
 }
 
 /* ---------- 렌더링 ---------- */
@@ -649,10 +677,16 @@ function renderResult() {
   let html = `<div class="rsum">채굴 <b>${fmt(E)}${unitOf(isLiq(state.res))}</b> (${koOf(state.res)}) 전부 투입 →
     <b>${koOf(state.target)} ${fmt(targetRate)}${unitOf(isLiq(state.target))}</b> 생산.
     아래 세팅이면 <b>어느 기계도 놀지 않습니다</b> (재료가 정확히 맞물림).`;
-  const extList = Object.entries(ext).filter(([, v]) => v > 1e-6);
-  if (extList.length) {
-    html += `<br>따로 끌어와야 하는 재료: ` + extList.map(([k, v]) =>
-      `<span class="ext">${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}${isLiq(k) ? ' (파이프)' : ''}</span>`).join(' · ');
+  const plans = auxPlans(ext);
+  const planned = plans.filter(p => !p.unplanned);
+  if (planned.length) {
+    html += `<br>부수 원자재 (채굴 계획 포함): ` + planned.map(p =>
+      `<b>${koOf(p.id)} ${fmt(p.need)}${unitOf(p.liq)}</b> <span class="hint">(${p.name} ×${p.count} · ${fmt(p.clock)}%)</span>`).join(' · ');
+  }
+  const unplanned = plans.filter(p => p.unplanned);
+  if (unplanned.length) {
+    html += `<br>별도 라인 필요: ` + unplanned.map(p =>
+      `<span class="ext">${koOf(p.id)} ${fmt(p.need)}${unitOf(isLiq(p.id))}</span>`).join(' · ');
   }
   const reList = Object.entries(reused).filter(([, v]) => v > 1e-6);
   if (reList.length) {
@@ -675,9 +709,23 @@ function renderResult() {
   html += `<div class="stage"><div class="head">${iconImg(state.res, 26)}<span class="t">채굴 · 추출</span>
     <span class="rate">${fmt(oreUsed)}${unitOf(isLiq(state.res))} 사용</span></div>${mineDiagram()}</div>`;
 
+  // 부수 원자재 채굴 카드 (정석: 전부 직접 캔다)
+  for (const pl of planned) {
+    const c = auxMineCore(pl);
+    html += `<div class="stage"><div class="head">${iconImg(pl.id, 26)}<span class="t">${koOf(pl.id)} 채굴·추출</span>
+      <span class="rate">${fmt(pl.need)}${unitOf(pl.liq)}</span></div>
+      <div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>
+      <div class="mach"><span class="badge good">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%</span>
+        ${flowBadge(pl.need, pl.liq)}
+        <span class="badge">⚡ ${fmt(pl.power)} MW</span>
+        ${pl.assume ? `<span class="badge warn" style="color:var(--warn)">${pl.assume} — 실제 순도에 맞게 클럭 조정</span>` : ''}</div>
+    </div>`;
+  }
+
   // 단계: 깊은 것(원자재 쪽)부터 (재사용으로 0이 된 라인은 제외)
   const stages = Object.entries(totals).filter(([, t]) => t.rate > 1e-6).sort((a, b) => b[1].depth - a[1].depth);
-  let totalPower = state.deps.reduce((s, d) => s + depPower(d), 0);
+  let totalPower = state.deps.reduce((s, d) => s + depPower(d), 0)
+    + planned.reduce((s, p) => s + p.power, 0);
   const stageInfo = [];
   for (const [item, t] of stages) {
     const ml = machineLine(item, t.rate);
@@ -704,9 +752,9 @@ function renderResult() {
   if (stageInfo.length) {
     html += `<div class="stage">
       <div class="head"><span class="t">🗺 전체 배치도</span>
-        <span class="hint">채굴 → 목표 한눈에 · 점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span>,
-        <span style="color:#ffc94d">⤵ 따로 공급</span>=이 체인 밖(다른 매장지·라인)에서 끌어올 재료 · 상세 수치는 위 단계 카드</span></div>
-      ${overviewDiagram(stageInfo, reused, oreUsed)}
+        <span class="hint">위의 채굴·단계 배치도를 그대로 이어 붙인 전체 그림 — 단계 사이 연결선은 오른쪽 레인을 타고 내려갑니다.
+        점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span></span></div>
+      ${composedDiagram(stageInfo, reused, oreUsed, plans)}
     </div>`;
   }
 
