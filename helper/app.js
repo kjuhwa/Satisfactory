@@ -139,6 +139,53 @@ function buildChain(targetRate) {
   return { totals, ext, bypro, oreUsed };
 }
 
+/* ---------- 분배기 (실게임: 분배기 1→3, 합류기 3→1) ----------
+ * 균형 트리: 대수가 2·3의 곱(2,3,4,6,8,9,12…)일 때만 가능 — 즉시 균등.
+ * 매니폴드(일렬): 아무 대수나 가능 — 버퍼가 찰 때까지 앞쪽 기계부터 돈다. */
+function splitTree(n) {
+  let m = n;
+  const fs = [];
+  while (m % 2 === 0) { fs.push(2); m /= 2; }
+  while (m % 3 === 0) { fs.push(3); m /= 3; }
+  if (m !== 1 || n < 2) return null;
+  fs.sort();                       // 2분기 먼저 → 분배기 수 최소
+  let count = 0, width = 1;
+  const desc = [];
+  for (const f of fs) {
+    desc.push(width === 1 ? `1→${f}` : `1→${f} ×${width}`);
+    count += width;
+    width *= f;
+  }
+  return { count, desc: desc.join(', ') };
+}
+function nextBalanced(n) {
+  for (let k = n + 1; k <= n * 3 + 2; k++) if (splitTree(k)) return k;
+  return null;
+}
+
+function distGuide(ml, rate) {
+  const N = ml.count;
+  if (N <= 1) return '';
+  const per = rate / N;
+  const tree = splitTree(N);
+  let html = '<div class="tip">🔀 벨트 1줄 → ' + N + '대 나누기: ';
+  if (tree) {
+    html += `<b>균형 트리</b> — 분배기 ${tree.count}개 (${tree.desc}) → 즉시 각 ${fmt(per)}/분 균등. ` +
+      `또는 매니폴드(분배기 ${N}개 일렬) — 간단하지만 예열 필요`;
+  } else {
+    const nb = nextBalanced(N);
+    html += `<b>매니폴드</b> — 분배기 ${N}개 일렬 (${N}대는 2·3 곱이 아니라 균형 트리 불가)`;
+    if (nb) {
+      const c2 = rate / (nb * ml.per) * 100;
+      const t2 = splitTree(nb);
+      html += `. 즉시 균등을 원하면 <b>${nb}대 × ${fmt(c2)}%</b>로 — 균형 트리(분배기 ${t2.count}개: ${t2.desc}) 가능`;
+    }
+  }
+  html += ` · 모으기: 합류기 ${N - 1}개 일렬</div>`;
+  if (ml.r.in.length > 1) html += `<div class="tip">↳ 입력 재료가 ${ml.r.in.length}종이므로 재료마다 벨트·분배를 따로 구성합니다</div>`;
+  return html;
+}
+
 /* ---------- 렌더링 ---------- */
 function iconImg(id, size) {
   return `<img src="../game/icons/${id}.png" width="${size}" height="${size}" onerror="this.remove()" alt="">`;
@@ -248,6 +295,11 @@ function renderResult() {
   if (bpList.length) html += `<br>부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}/분`).join(' · ');
   html += `</div>`;
 
+  html += `<div class="rsum" style="font-size:13px">🔀 <b>분배기 상식</b> — 일렬로 늘어세운 분배기(매니폴드)는
+    처음에 <b>앞쪽 기계만 재료를 받습니다</b>. 고장이 아니라, 기계 버퍼가 차면 남는 재료가 뒤로 흘러
+    몇 분 뒤 전원 100%로 맞춰집니다 (총 공급 = 총 소비이기만 하면 됨 — 아래 세팅이 그 상태).
+    기다리기 싫으면 각 단계의 <b>균형 트리</b> 구성을 쓰세요 — 처음부터 균등하게 나뉩니다.</div>`;
+
   // 광석 → 첫 단계 벨트
   html += `<div class="arrow">${iconImg(state.res, 18)} ${koOf(state.res)} ${fmt(oreUsed)}/분 ⬇ ${beltBadge(oreUsed)}</div>`;
 
@@ -273,6 +325,7 @@ function renderResult() {
         ${beltBadge(t.rate)}
         <span class="badge">⚡ ${fmt(ml.power)} MW</span></div>
       <div class="tip">입력: ${ins}</div>
+      ${distGuide(ml, t.rate)}
       ${ml.alt}
     </div>`;
   }
