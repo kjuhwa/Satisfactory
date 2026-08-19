@@ -417,6 +417,89 @@ function stageDiagram(item, ml, rate) {
   return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 780)}px">${s}</svg></div>`;
 }
 
+/* ---------- 전체 배치도 (조감도) ----------
+ * 채굴 → 단계 → 목표를 한 장에: 깊이별 열 배치, 벨트(점선)/파이프(파랑) 화살표,
+ * 부산물 재순환은 ♻ 초록 점선으로 표시 */
+function overviewDiagram(stageInfo, reused, oreUsed) {
+  const NW = 174, NH = 96, COLW = 214, ROWH = 118;
+  const maxDepth = Math.max(0, ...stageInfo.map(s => s.t.depth));
+  const depthCol = d => (maxDepth + 1) - d;          // 광석=0열, 목표=마지막 열
+  const cols = [];                                    // colIdx -> [노드들]
+  const put = (col, node) => { (cols[col] = cols[col] || []).push(node); };
+  put(0, { kind: 'ore' });
+  for (const s of stageInfo) put(depthCol(s.t.depth), { kind: 'stage', s });
+  const pos = {};
+  cols.forEach((list, ci) => list.forEach((n, ri) => {
+    const p = { x: 14 + ci * COLW, y: 30 + ri * ROWH };
+    if (n.kind === 'ore') pos['@ore'] = p; else pos[n.s.item] = p;
+  }));
+  const W = 14 + cols.length * COLW + 10;
+  const H = 30 + Math.max(...cols.map(c => c.length)) * ROWH + 6;
+  let nodes = '', edges = '', labels = '';
+
+  const edge = (a, b, label, liq, recycle) => {
+    const x1 = a.x + NW, y1 = a.y + NH / 2, x2 = b.x, y2 = b.y + NH / 2;
+    const col = recycle ? '#6fd68a' : (liq ? BP.pipe : BP.belt);
+    const dx = Math.max(34, Math.abs(x2 - x1) / 2);
+    edges += `<path d="M ${x1} ${y1} C ${x1 + dx} ${y1}, ${x2 - dx} ${y2}, ${x2} ${y2}" fill="none" stroke="${col}" stroke-width="${liq && !recycle ? 3.5 : 2.5}" ${recycle ? 'stroke-dasharray="3 4"' : (liq ? '' : 'stroke-dasharray="6 4"')}/>`;
+    edges += `<polygon points="${x2 - 7},${y2 - 4} ${x2},${y2} ${x2 - 7},${y2 + 4}" fill="${col}"/>`;
+    const mx = (x1 + x2) / 2, my = (y1 + y2) / 2 - 6;
+    labels += `<text x="${mx}" y="${my}" text-anchor="middle" font-size="9.5" font-weight="700" fill="${recycle ? '#6fd68a' : BP.bright}" paint-order="stroke" stroke="#1b1813" stroke-width="3">${label}</text>`;
+  };
+  const nodeBox = (p, accent) =>
+    `<rect x="${p.x}" y="${p.y}" width="${NW}" height="${NH}" rx="10" fill="#241f18" stroke="${accent ? BP.accent : BP.frame}" stroke-width="${accent ? 2 : 1.5}"/>`;
+
+  // 광석 노드
+  {
+    const p = pos['@ore'];
+    nodes += nodeBox(p);
+    nodes += svgIcon(state.res, p.x + 8, p.y + 8, 26);
+    nodes += `<text x="${p.x + 42}" y="${p.y + 21}" font-size="10.5" font-weight="700" fill="${BP.bright}">${koOf(state.res)}</text>`;
+    nodes += `<text x="${p.x + 42}" y="${p.y + 37}" font-size="10.5" font-weight="700" fill="${BP.accent}">${fmt(oreUsed)}${unitOf(isLiq(state.res))}</text>`;
+    const m = depMachine(state.deps[0]);
+    nodes += svgIcon(m.icon, p.x + 8, p.y + NH - 34, 22);
+    nodes += `<text x="${p.x + 36}" y="${p.y + NH - 18}" font-size="9.5" fill="${BP.text}">${m.name} 외 ${state.deps.length}대</text>`;
+  }
+  // 단계 노드
+  for (const s of stageInfo) {
+    const p = pos[s.item];
+    const isTarget = s.item === state.target;
+    nodes += nodeBox(p, isTarget);
+    nodes += svgIcon(s.item, p.x + 8, p.y + 8, 26);
+    nodes += `<text x="${p.x + 42}" y="${p.y + 21}" font-size="10.5" font-weight="700" fill="${BP.bright}">${koOf(s.item)}</text>`;
+    nodes += `<text x="${p.x + 42}" y="${p.y + 37}" font-size="10.5" font-weight="700" fill="${BP.accent}">${fmt(s.t.rate)}${unitOf(isLiq(s.item))}</text>`;
+    // 외부 공급 재료
+    const exts = s.ml.r.in.filter(([ing]) => ing !== state.res && !stageInfo.some(x => x.item === ing));
+    if (exts.length) {
+      const outQty = s.ml.r.out.find(o => o[0] === s.item)[1];
+      const txt = exts.map(([ing, q]) => `${koOf(ing)} ${fmt(s.t.rate / outQty * q)}`).join(' · ');
+      nodes += `<text x="${p.x + 8}" y="${p.y + 52}" font-size="9" fill="#ffc94d">⤵ 외부: ${txt}</text>`;
+    }
+    nodes += svgIcon(s.ml.r.machine, p.x + 8, p.y + NH - 34, 22);
+    nodes += `<text x="${p.x + 36}" y="${p.y + NH - 18}" font-size="9.5" fill="${BP.text}">${s.ml.m.ko} ${s.ml.count}대 × ${fmt(s.ml.clock)}%</text>`;
+  }
+  // 흐름 화살표
+  for (const s of stageInfo) {
+    const outQty = s.ml.r.out.find(o => o[0] === s.item)[1];
+    for (const [ing, q] of s.ml.r.in) {
+      const need = s.t.rate / outQty * q;
+      const liq = isLiq(ing);
+      const f = flowFor(need, liq);
+      const label = `${fmt(need)}${unitOf(liq)} · Mk.${f.mk}${f.lines > 1 ? '×' + f.lines : ''}`;
+      if (ing === state.res) edge(pos['@ore'], pos[s.item], label, liq);
+      else if (pos[ing]) edge(pos[ing], pos[s.item], label, liq);
+    }
+  }
+  // 부산물 재순환 ♻
+  for (const [k, amt] of Object.entries(reused)) {
+    if (amt <= 1e-6) continue;
+    const prod = stageInfo.find(x => x.ml.r.out.some(o => o[0] === k && o[0] !== x.item));
+    const cons = stageInfo.find(x => x.ml.r.in.some(([ing]) => ing === k));
+    if (prod && cons) edge(pos[prod.item], pos[cons.item], `♻ ${koOf(k)} ${fmt(amt)}${unitOf(isLiq(k))}`, isLiq(k), true);
+  }
+  return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 780)}px">${edges}${nodes}${labels}</svg></div>`;
+}
+
 /* ---------- 렌더링 ---------- */
 function iconImg(id, size) {
   return `<img src="../game/icons/${id}.png" width="${size}" height="${size}" onerror="this.remove()" alt="">`;
@@ -580,8 +663,10 @@ function renderResult() {
   // 단계: 깊은 것(원자재 쪽)부터 (재사용으로 0이 된 라인은 제외)
   const stages = Object.entries(totals).filter(([, t]) => t.rate > 1e-6).sort((a, b) => b[1].depth - a[1].depth);
   let totalPower = state.deps.reduce((s, d) => s + depPower(d), 0);
+  const stageInfo = [];
   for (const [item, t] of stages) {
     const ml = machineLine(item, t.rate);
+    stageInfo.push({ item, t, ml });
     totalPower += ml.power;
     const recipes = byOut[item];
     const selHtml = recipes.length > 1
@@ -600,6 +685,15 @@ function renderResult() {
       ${ml.alt}
     </div>`;
   }
+  // 🗺 전체 배치도 — 채굴부터 목표까지 한 장으로
+  if (stageInfo.length) {
+    html += `<div class="stage">
+      <div class="head"><span class="t">🗺 전체 배치도</span>
+        <span class="hint">채굴 → 목표 한눈에 · 점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 상세 수치는 위 단계 카드</span></div>
+      ${overviewDiagram(stageInfo, reused, oreUsed)}
+    </div>`;
+  }
+
   // 🚚 수송 가이드 — 매장지가 멀 때: 단계별 벨트 부하(광석 대비)로 "어디까지 현지 가공할지" 판단
   if (stages.length >= 1) {
     let chips = `<span class="badge">${iconImg(state.res, 16)} ${koOf(state.res)} ${fmt(oreUsed)}${unitOf(isLiq(state.res))} <b>100%</b></span>`;
