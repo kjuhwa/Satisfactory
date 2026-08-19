@@ -1,0 +1,98 @@
+:root {
+  --bg: #16130f;
+  --panel: #211d17;
+  --panel2: #2a251d;
+  --border: #3a332a;
+  --text: #e8e2d8;
+  --muted: #9a917f;
+  --accent: #fa9549;
+  --good: #6fd68a;
+  --warn: #ffc94d;
+  --bad: #ff6b5e;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 0 0 40px;
+  background: var(--bg); color: var(--text);
+  font-family: "Segoe UI", "Malgun Gothic", sans-serif;
+  font-size: 15px;
+}
+header { text-align: center; padding: 26px 16px 6px; }
+header h1 { margin: 0; color: var(--accent); font-size: 26px; }
+header .sub { color: var(--muted); font-size: 13.5px; margin: 8px 0 0; }
+main { max-width: 860px; margin: 0 auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; }
+footer { text-align: center; color: var(--muted); font-size: 13px; margin-top: 18px; }
+footer a { color: var(--accent); text-decoration: none; }
+
+.panel {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 16px 18px;
+}
+.panel h2 { margin: 0 0 12px; font-size: 16.5px; color: var(--accent); }
+.hint { color: var(--muted); font-size: 12.5px; font-weight: 400; }
+.row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; margin-bottom: 8px; }
+label { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; color: var(--muted); }
+select, input {
+  font: inherit; color: var(--text);
+  background: var(--panel2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 10px; min-width: 0;
+}
+input#inp-target { width: 280px; max-width: 70vw; }
+button {
+  font: inherit; font-weight: 700; cursor: pointer;
+  background: var(--accent); color: #221605;
+  border: none; border-radius: 8px; padding: 9px 16px;
+}
+button.ghost { background: var(--panel2); color: var(--text); border: 1px solid var(--border); font-weight: 600; }
+button.mini { padding: 6px 10px; font-size: 13px; }
+button:active { transform: scale(.97); }
+
+.dep-row { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; padding: 8px 0; border-bottom: 1px dashed var(--border); }
+.dep-row:last-of-type { border-bottom: none; }
+.dep-out { font-size: 13px; color: var(--muted); align-self: center; margin-left: auto; text-align: right; }
+.dep-out b { color: var(--text); }
+
+#mine-summary { margin-top: 10px; }
+
+table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+th, td { border: 1px solid var(--border); padding: 7px 9px; text-align: center; }
+th { background: var(--panel2); color: var(--muted); font-weight: 600; }
+td b { color: var(--accent); }
+td .fit { color: var(--good); font-weight: 700; }
+
+.stage {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 12px; padding: 14px 18px;
+  display: flex; flex-direction: column; gap: 8px;
+}
+.stage .head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.stage .head img { width: 34px; height: 34px; image-rendering: auto; }
+.stage .head .t { font-size: 16px; font-weight: 700; }
+.stage .head .rate { color: var(--accent); font-weight: 700; margin-left: auto; }
+.stage .mach { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; font-size: 14px; }
+.stage .mach img { width: 26px; height: 26px; }
+.badge {
+  display: inline-block; padding: 3px 10px; border-radius: 999px;
+  font-size: 12.5px; font-weight: 700;
+  background: var(--panel2); border: 1px solid var(--border);
+}
+.badge.good { color: var(--good); border-color: #2f5c3d; }
+.badge.warn { color: var(--warn); border-color: #6b5722; }
+.badge.bad  { color: var(--bad); border-color: #6b2d28; }
+.badge.belt { color: #7fa3d0; border-color: #2c4361; }
+.tip { font-size: 12.5px; color: var(--muted); }
+.tip b { color: var(--warn); }
+.stage select { padding: 5px 8px; font-size: 13px; }
+
+.arrow { text-align: center; color: var(--muted); font-size: 13px; margin: -4px 0; }
+.arrow .badge { font-size: 12px; }
+
+#result { display: flex; flex-direction: column; gap: 10px; }
+.rsum { background: var(--panel2); border: 1px solid var(--border); border-radius: 12px; padding: 12px 18px; font-size: 14px; line-height: 1.8; }
+.rsum b { color: var(--accent); }
+.ext { color: var(--warn); }
+
+@media (max-width: 640px) {
+  body { font-size: 14px; }
+  .stage .head .rate { width: 100%; margin-left: 0; }
+}

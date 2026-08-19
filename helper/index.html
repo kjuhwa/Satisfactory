@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>효율 헬퍼 — Satisfactory 생산 라인 계산</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <h1>⚖ 효율 헬퍼</h1>
+  <p class="sub">매장지 순도부터 벨트·기계 대수·클럭까지 — 유휴 없는 라인 세팅을 계산합니다 (실제 게임 1.0 수치)</p>
+</header>
+
+<main>
+  <section class="panel" id="p-deposit">
+    <h2>1. 매장지 · 채굴기</h2>
+    <div class="row">
+      <label>자원
+        <select id="sel-res"></select>
+      </label>
+    </div>
+    <div id="dep-rows"></div>
+    <button id="btn-add-dep" class="ghost">＋ 채굴기 추가</button>
+    <div id="mine-summary"></div>
+  </section>
+
+  <section class="panel" id="p-quick">
+    <h2>순도 × 채굴기 빠른 표 <span class="hint">(클럭 100% 기준 · 딱 맞는 벨트)</span></h2>
+    <div id="quick-table"></div>
+  </section>
+
+  <section class="panel" id="p-target">
+    <h2>2. 무엇을 만들까</h2>
+    <div class="row">
+      <label>목표 아이템
+        <input id="inp-target" list="dl-items" placeholder="예: 철판, 보강된 철판, 회전자…" autocomplete="off">
+        <datalist id="dl-items"></datalist>
+      </label>
+      <button id="btn-clear" class="ghost">지우기</button>
+    </div>
+    <p class="hint">캐고 있는 자원에서 만들 수 있는 아이템을 고르면, 채굴량 전부를 남김없이 소화하는
+    단계별 기계 대수·클럭·벨트를 계산합니다.</p>
+  </section>
+
+  <section id="result"></section>
+</main>
+
+<footer>
+  <a href="../web/">📋 공장 플래너 (목표량 → 필요 라인 역산)</a> ·
+  <a href="../">홈</a>
+</footer>
+
+<script src="../web/data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
