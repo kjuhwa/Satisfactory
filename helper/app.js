@@ -600,6 +600,20 @@ function renderResult() {
       ${ml.alt}
     </div>`;
   }
+  // 🚚 수송 가이드 — 매장지가 멀 때: 단계별 벨트 부하(광석 대비)로 "어디까지 현지 가공할지" 판단
+  if (stages.length >= 1) {
+    let chips = `<span class="badge">${iconImg(state.res, 16)} ${koOf(state.res)} ${fmt(oreUsed)}${unitOf(isLiq(state.res))} <b>100%</b></span>`;
+    for (const [item, t] of stages) {
+      const pct = t.rate / oreUsed * 100;
+      chips += ` ▸ <span class="badge ${pct <= 50 ? 'good' : ''}">${iconImg(item, 16)} ${koOf(item)} ${fmt(t.rate)}${unitOf(isLiq(item))} <b>${fmt(pct)}%</b></span>`;
+    }
+    html += `<div class="rsum" style="font-size:13px">🚚 <b>수송 가이드</b> — 매장지가 멀면 전부 본진으로 끌고 오지 말고,
+      <b>부하(%)가 뚝 떨어지는 단계까지 매장지 옆에서 가공</b>한 뒤 그것만 나르세요.<br>
+      <div style="margin:6px 0; line-height:2.2">${chips}</div>
+      <span class="hint">%는 광석 벨트 대비 나를 양. 벨트·파이프는 아무리 길어도 손실이 없으니(건설비뿐) 초반엔 그냥 길게 잇는 게 정답이고,
+      주괴처럼 1:1인 단계는 현지 가공해도 수송 이득이 없습니다. 초록 배지(≤50%)부터 벨트 수가 절반 이하로 줄어듭니다.
+      현지 가공엔 전력이 필요하니 전력선을 같이 끌고 갈 것. 장거리 대량 수송은 트럭(티어 3)·기차(티어 6), 액체는 파이프 구간마다 펌프로 양정 확보.</span></div>`;
+  }
   html += `<div class="rsum">총 전력 (채굴·추출 포함): <b>${fmt(totalPower)} MW</b></div>`;
   box.innerHTML = html;
   box.querySelectorAll('select[data-item]').forEach(s => s.addEventListener('change', () => {
