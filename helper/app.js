@@ -457,8 +457,9 @@ function overviewDiagram(stageInfo, reused, oreUsed) {
     nodes += `<text x="${p.x + 42}" y="${p.y + 21}" font-size="10.5" font-weight="700" fill="${BP.bright}">${koOf(state.res)}</text>`;
     nodes += `<text x="${p.x + 42}" y="${p.y + 37}" font-size="10.5" font-weight="700" fill="${BP.accent}">${fmt(oreUsed)}${unitOf(isLiq(state.res))}</text>`;
     const m = depMachine(state.deps[0]);
-    nodes += svgIcon(m.icon, p.x + 8, p.y + NH - 34, 22);
-    nodes += `<text x="${p.x + 36}" y="${p.y + NH - 18}" font-size="9.5" fill="${BP.text}">${m.name} 외 ${state.deps.length}대</text>`;
+    const dn = state.deps.length;
+    for (let i = 0; i < Math.min(dn, 4); i++) nodes += svgIcon(m.icon, p.x + 8 + i * 10, p.y + NH - 34, 22);
+    nodes += `<text x="${p.x + 38 + Math.min(dn, 4) * 10}" y="${p.y + NH - 16}" font-size="10" fill="${BP.text}">${m.name} <tspan font-size="12.5" font-weight="700" fill="${BP.accent}">×${dn}</tspan></text>`;
   }
   // 단계 노드
   for (const s of stageInfo) {
@@ -475,8 +476,10 @@ function overviewDiagram(stageInfo, reused, oreUsed) {
       const txt = exts.map(([ing, q]) => `${koOf(ing)} ${fmt(s.t.rate / outQty * q)}`).join(' · ');
       nodes += `<text x="${p.x + 8}" y="${p.y + 52}" font-size="9" fill="#ffc94d">⤵ 외부: ${txt}</text>`;
     }
-    nodes += svgIcon(s.ml.r.machine, p.x + 8, p.y + NH - 34, 22);
-    nodes += `<text x="${p.x + 36}" y="${p.y + NH - 18}" font-size="9.5" fill="${BP.text}">${s.ml.m.ko} ${s.ml.count}대 × ${fmt(s.ml.clock)}%</text>`;
+    // 기계 아이콘을 대수만큼 겹쳐 그려 다수임이 보이게 (최대 4개 + ×N 숫자 강조)
+    const mc = s.ml.count;
+    for (let i = 0; i < Math.min(mc, 4); i++) nodes += svgIcon(s.ml.r.machine, p.x + 8 + i * 10, p.y + NH - 34, 22);
+    nodes += `<text x="${p.x + 38 + Math.min(mc, 4) * 10}" y="${p.y + NH - 16}" font-size="10" fill="${BP.text}">${s.ml.m.ko} <tspan font-size="12.5" font-weight="700" fill="${BP.accent}">×${mc}</tspan> <tspan font-size="9">· ${fmt(s.ml.clock)}%</tspan></text>`;
   }
   // 흐름 화살표
   for (const s of stageInfo) {
@@ -497,7 +500,8 @@ function overviewDiagram(stageInfo, reused, oreUsed) {
     const cons = stageInfo.find(x => x.ml.r.in.some(([ing]) => ing === k));
     if (prod && cons) edge(pos[prod.item], pos[cons.item], `♻ ${koOf(k)} ${fmt(amt)}${unitOf(isLiq(k))}`, isLiq(k), true);
   }
-  return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 780)}px">${edges}${nodes}${labels}</svg></div>`;
+  // 넓은 체인은 축소 대신 가로 스크롤 유지 (글씨가 뭉개지지 않게)
+  return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 1500)}px">${edges}${nodes}${labels}</svg></div>`;
 }
 
 /* ---------- 렌더링 ---------- */
