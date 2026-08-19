@@ -40,17 +40,25 @@ let state = {
   target: null,          // item id
   recipeSel: {},         // item id -> recipe id
   noMerge: {},           // item id -> true(합류기 생략, 각자 직결 배치도)
+  maxBelt: 6,            // 해금된 벨트 티어
+  maxPipe: 2,            // 해금된 파이프 티어
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
   if (saved && saved.res) state = Object.assign(state, saved);
 } catch (e) { }
 state.noMerge = state.noMerge || {};
+state.maxBelt = state.maxBelt || 6;
+state.maxPipe = state.maxPipe || 2;
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
-/* ---------- 벨트 · 파이프 ---------- */
+/* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
+function avTiers(liq) {
+  return (liq ? PIPES : BELTS).filter(([mk]) => mk <= (liq ? state.maxPipe : state.maxBelt));
+}
+function maxCap(liq) { const t = avTiers(liq); return t[t.length - 1][1]; }
 function flowFor(rate, liq) {
-  const tiers = liq ? PIPES : BELTS;
+  const tiers = avTiers(liq);
   for (const [mk, cap] of tiers) if (rate <= cap + 1e-9) return { mk, cap, lines: 1, liq };
   const [mk, cap] = tiers[tiers.length - 1];
   return { mk, cap, lines: Math.ceil(rate / cap - 1e-9), liq };
@@ -67,13 +75,17 @@ function flowBadge(rate, liq) {
 }
 const unitOf = liq => liq ? '㎥/분' : '/분';
 
-/* ---------- 채굴 · 추출 ---------- */
-function depRate(d) {
+/* ---------- 채굴 · 추출 ----------
+ * 채굴기/추출기의 출력 포트는 하나 → 해금된 벨트/파이프 한도가 실효 상한이 된다 */
+function depRateRaw(d) {
   const k = resKind();
   if (k === 'water') return RES_KIND[state.res].base * d.clock / 100;
   const pm = PURITY.find(p => p[0] === d.purity)[2];
   if (k === 'oil') return RES_KIND[state.res].base * pm * d.clock / 100;
   return MINER_BASE[d.mk] * pm * d.clock / 100;
+}
+function depRate(d) {
+  return Math.min(depRateRaw(d), maxCap(isLiq(state.res)));
 }
 function depPower(d) {
   const k = resKind();
@@ -89,10 +101,19 @@ const totalMine = () => state.deps.reduce((s, d) => s + depRate(d), 0);
 
 function shardsFor(clock) { return clock > 100 ? Math.ceil((clock - 100) / 50 - 1e-9) : 0; }
 
-/* 추출기 한 대의 팁: 지금 벨트/파이프에 여유가 있으면 꽉 채우는 클럭 제안 */
+/* 추출기 한 대의 팁: 벨트 병목 경고 또는 꽉 채우는 클럭 제안 */
 function depTip(d) {
-  const rate = depRate(d);
   const liq = isLiq(state.res);
+  const raw = depRateRaw(d);
+  const cap = maxCap(liq);
+  if (raw > cap + 1e-9) {
+    // 출력 포트가 하나라 벨트가 병목 — 클럭을 낮추면 같은 실효 출력에 전력 절약
+    const fit = cap / (raw / (d.clock / 100)) * 100;
+    const kind = liq ? '파이프' : '벨트';
+    return `<div class="tip">⚠ <b>${kind} 병목</b> — 출력 ${fmt(raw)} > 해금 ${kind} 한도 ${cap}, 실효 <b>${fmt(cap)}${unitOf(liq)}</b>.
+      클럭을 <b>${fmt(fit)}%</b>로 낮추면 같은 양을 캐면서 전력만 절약됩니다 (상위 ${kind} 해금 시 되돌리기)</div>`;
+  }
+  const rate = depRate(d);
   const f = flowFor(rate, liq);
   if (f.lines > 1 || rate >= f.cap - 1e-9) return '';
   const base = rate / (d.clock / 100);
@@ -234,6 +255,14 @@ function distGuide(item, ml, rate) {
   if (N > 1 && solidIns.length) {
     const per = rate / N;
     const tree = splitTree(N);
+    // 입력이 해금 벨트 한도를 넘으면 여러 줄로 나눠 와야 한다
+    const maxInLines = Math.max(...solidIns.map(([ing, q]) => {
+      const outQty = ml.r.out.find(o => o[0] === item)[1];
+      return flowFor(rate / outQty * q, false).lines;
+    }));
+    if (maxInLines > 1) {
+      html += `<div class="tip">🔀 입력이 해금 벨트 한도를 넘어 <b>${maxInLines}줄</b>로 들어옵니다 — 기계를 ${maxInLines}그룹(각 ~${Math.ceil(N / maxInLines)}대)으로 나눠 줄마다 아래 분배를 반복하세요</div>`;
+    }
     html += '<div class="tip">🔀 벨트 1줄 → ' + N + '대 나누기: ';
     if (tree) {
       html += `<b>균형 트리</b> — 분배기 ${tree.count}개 (${tree.desc}) → 즉시 각 ${fmt(per)}/분 균등. ` +
@@ -420,7 +449,7 @@ function buildDepRows() {
     controls += `<label>클럭 %<input data-k="clock" type="number" min="1" max="250" step="0.1" value="${d.clock}" style="width:76px"></label>`;
     row.innerHTML = controls +
       (state.deps.length > 1 ? `<button class="ghost mini" data-del>✕</button>` : '') +
-      `<div class="dep-out"><b>${fmt(depRate(d))}${unitOf(isLiq(state.res))}</b> · ${flowBadge(depRate(d), isLiq(state.res))}${depTip(d)}</div>`;
+      `<div class="dep-out"><b>${fmt(depRate(d))}${unitOf(isLiq(state.res))}</b>${depRateRaw(d) > depRate(d) + 1e-9 ? ` <span class="hint">(원출력 ${fmt(depRateRaw(d))})</span>` : ''} · ${flowBadge(depRate(d), isLiq(state.res))}${depTip(d)}</div>`;
     row.querySelectorAll('[data-k]').forEach(el => el.addEventListener('change', () => {
       const k = el.dataset.k;
       d[k] = k === 'purity' ? el.value : +el.value;
@@ -457,6 +486,10 @@ function buildQuickTable() {
   const rows = [1, 2, 3].map(mk => {
     const cells = PURITY.map(([, ko, mult]) => {
       const rate = MINER_BASE[mk] * mult;
+      const cap = maxCap(false);
+      if (rate > cap + 1e-9) {
+        return `<td><b>${rate}</b>/분<br><span style="color:var(--bad)">⚠ 실효 ${cap} (벨트 병목)</span></td>`;
+      }
       const b = flowFor(rate, false);
       const exact = Math.abs(rate - b.cap) < 1e-9;
       return `<td><b>${rate}</b>/분<br>${exact ? `<span class="fit">Mk.${b.mk} 딱 ✨</span>` : `Mk.${b.mk} (${fmt(rate / b.cap * 100)}%)`}</td>`;
@@ -488,8 +521,9 @@ function machineLine(item, rate) {
   const clock = rate / (count * per) * 100;
   const m = D.machines[r.machine] || { ko: r.machine, power: 0 };
   const power = m.power * count * Math.pow(clock / 100, EXP);
-  // 조각으로 대수 줄이기 대안
-  const minCount = Math.ceil(rate / (per * 2.5) - 1e-9);
+  // 조각으로 대수 줄이기 대안 (기계 출력 포트도 하나 — 한 대 출력이 벨트 한도를 넘지 않게)
+  let minCount = Math.ceil(rate / (per * 2.5) - 1e-9);
+  minCount = Math.max(minCount, Math.ceil(rate / maxCap(isLiq(item)) - 1e-9));
   let alt = '';
   if (minCount < count && minCount > 0) {
     const c2 = rate / (minCount * per) * 100;
@@ -590,6 +624,8 @@ function renderMineSummary() {
 function update() {
   save();
   $('sel-res').value = state.res;
+  $('sel-belt').value = state.maxBelt;
+  $('sel-pipe').value = state.maxPipe;
   buildDepRows();
   buildQuickTable();
   renderMineSummary();
@@ -598,6 +634,10 @@ function update() {
 
 /* ---------- 초기화 ---------- */
 buildResSelect();
+$('sel-belt').innerHTML = BELTS.map(([mk, cap]) => `<option value="${mk}">~Mk.${mk} (${cap}/분)</option>`).join('');
+$('sel-pipe').innerHTML = PIPES.map(([mk, cap]) => `<option value="${mk}">~Mk.${mk} (${cap}㎥/분)</option>`).join('');
+$('sel-belt').addEventListener('change', () => { state.maxBelt = +$('sel-belt').value; update(); });
+$('sel-pipe').addEventListener('change', () => { state.maxPipe = +$('sel-pipe').value; update(); });
 nameMap = buildDatalist();
 if (state.target) {
   const found = [...nameMap.entries()].find(([, id]) => id === state.target);
