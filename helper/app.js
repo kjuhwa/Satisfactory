@@ -45,16 +45,24 @@ let state = {
   auxPurity: {},         // 부수 원자재 매장지 순도 (item id -> impure|normal|pure)
   auxDeps: {},           // 부수 원자재 매장지 직접 구성 (item id -> [{purity, mk?}])
   mission: null,         // 미션 모드 {i: missionList 인덱스, min: 목표 분}
+  gen: 'coal',           // 발전소 계획 방식 (none|coal|fuel|turbo|nuclear)
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
   if (saved && saved.res) state = Object.assign(state, saved);
 } catch (e) { }
+// 공유 링크(#s=...)로 열었으면 그 설정을 우선 적용
+if (location.hash.startsWith('#s=')) {
+  try {
+    state = Object.assign(state, JSON.parse(decodeURIComponent(escape(atob(location.hash.slice(3))))));
+  } catch (e) { }
+}
 state.noMerge = state.noMerge || {};
 state.maxBelt = state.maxBelt || 6;
 state.maxPipe = state.maxPipe || 2;
 state.auxPurity = state.auxPurity || {};
 state.auxDeps = state.auxDeps || {};
+state.gen = state.gen || 'coal';
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
@@ -471,14 +479,14 @@ function auxRowSpec(id, row) {
   const mk = row.mk || (resKind() === 'miner' ? state.deps[0].mk : 1);
   return { eff: MINER_BASE[mk] * puDef[2], pwr: MINER_PWR[mk], icon: `Desc_MinerMk${mk}_C`, name: `채굴기 Mk.${mk}`, puKo: puDef[1], mk };
 }
-function auxPlans(ext) {
+function auxPlans(ext, autoOnly) {
   const plans = [];
   for (const [id, need] of Object.entries(ext)) {
     if (need <= 1e-6) continue;
     if (!isRaw(id) || id === 'Desc_NitrogenGas_C') { plans.push({ id, need, unplanned: true }); continue; }
     const liq = isLiq(id);
     const cap = maxCap(liq);
-    const manualRows = state.auxDeps[id];
+    const manualRows = autoOnly ? null : state.auxDeps[id];
     let rowDefs;
     if (manualRows && manualRows.length) rowDefs = manualRows;
     else {
@@ -789,6 +797,29 @@ function bpTip(ml) {
     → 이 단계는 <b>청사진 ${sheets}장</b>${remain ? ` (마지막 장은 ${remain}대)` : ''} — 한 장 검증해서 복붙하면 건설이 빨라집니다</div>`;
 }
 
+/* 대체 레시피 자동 추천: 이 아이템의 레시피를 바꿨을 때 주 자원 소모가 줄어드는지 */
+function altSuggest(item) {
+  if (state.mission || !state.target || state.target === state.res) return '';
+  const list = byOut[item] || [];
+  if (list.length < 2) return '';
+  const cur = recipeOf(item).id;
+  const base = orePerUnit(state.target).ore;
+  if (base <= 1e-12) return '';
+  let best = null;
+  for (const r of list) {
+    if (r.id === cur) continue;
+    state.recipeSel[item] = r.id;
+    const o = orePerUnit(state.target).ore;
+    if (o > 1e-12 && (!best || o < best.o)) best = { r, o };
+  }
+  state.recipeSel[item] = cur;   // 원복
+  if (best && best.o < base * 0.95) {
+    return `<div class="tip">💡 레시피 추천: <b>${best.r.alt ? '★ ' : ''}${best.r.ko || best.r.name}</b>로 바꾸면
+      ${koOf(state.res)} 소모 <b>−${fmt((1 - best.o / base) * 100)}%</b> (드롭다운에서 선택)</div>`;
+  }
+  return '';
+}
+
 /* 공정 단계 카드들: totals → {html, stages, stageInfo, power} */
 function stageCardsHtml(totals) {
   const stages = Object.entries(totals).filter(([, t]) => t.rate > 1e-6).sort((a, b) => b[1].depth - a[1].depth);
@@ -813,6 +844,7 @@ function stageCardsHtml(totals) {
         ${ml.count > 1 ? `<button class="ghost mini" data-nomerge="${item}">${state.noMerge[item] ? '↩ 한 줄로 모으기' : '합류기 생략 보기'}</button>` : ''}</div>
       ${distGuide(item, ml, t.rate)}
       ${bpTip(ml)}
+      ${altSuggest(item)}
       ${ml.alt}
     </div>`;
   }
@@ -868,6 +900,86 @@ function attachHandlers(box, planned) {
     delete state.auxDeps[b.dataset.auxauto];
     update();
   }));
+  const gs = box.querySelector('#sel-gen');
+  if (gs) gs.addEventListener('change', () => { state.gen = gs.value; update(); });
+}
+
+/* ---------- 발전소 계획 ----------
+ * 공장 총 전력을 보고 발전기 대수 + 연료 소모 + 연료 생산 라인(정제 체인 포함)까지 설계.
+ * 연료 라인 자체가 쓰는 전력도 발전기 대수에 반영될 때까지 반복 수렴. */
+const GENS = {
+  coal: { name: '석탄 발전기', icon: 'Desc_GeneratorCoal_C', mw: 75, fuels: [['Desc_Coal_C', 15]], water: 45 },
+  fuel: { name: '연료 발전기', icon: 'Desc_GeneratorFuel_C', mw: 250, fuels: [['Desc_LiquidFuel_C', 20]], water: 0 },
+  turbo: { name: '연료 발전기 · 터보 연료', icon: 'Desc_GeneratorFuel_C', mw: 250, fuels: [['Desc_LiquidTurboFuel_C', 7.5]], water: 0 },
+  nuclear: { name: '원자력 발전소', icon: 'Desc_GeneratorNuclear_C', mw: 2500, fuels: [['Desc_NuclearFuelRod_C', 0.2]], water: 240 },
+};
+function powerPlan(factoryPower) {
+  const g = GENS[state.gen];
+  if (!g || factoryPower <= 0) return null;
+  let extra = 0, out = null;
+  for (let it = 0; it < 6; it++) {
+    const need = factoryPower + extra;
+    const n = Math.ceil(need / g.mw - 1e-9);
+    const extNeed = {};
+    const targets = [];
+    for (const [fid, per] of g.fuels) {
+      const rate = n * per;
+      if (isRaw(fid)) extNeed[fid] = (extNeed[fid] || 0) + rate;
+      else targets.push({ item: fid, rate });
+    }
+    if (g.water) extNeed['Desc_Water_C'] = (extNeed['Desc_Water_C'] || 0) + n * g.water;
+    let chain = null, chainPower = 0;
+    const chainStages = [];
+    if (targets.length) {
+      chain = solveMission(targets);
+      for (const [item, t] of Object.entries(chain.totals)) {
+        if (t.rate <= 1e-6) continue;
+        const ml = machineLine(item, t.rate);
+        chainPower += ml.power;
+        chainStages.push({ item, rate: t.rate, ml });
+      }
+      for (const k in chain.ext) if (chain.ext[k] > 1e-6) extNeed[k] = (extNeed[k] || 0) + chain.ext[k];
+    }
+    const plans = auxPlans(extNeed, true).filter(pl => !pl.unplanned);
+    const exPower = plans.reduce((a, pl) => a + pl.power, 0);
+    out = { g, n, need, gross: n * g.mw, chainStages, plans, chainPower, exPower, bypro: chain ? chain.bypro : {} };
+    const newExtra = chainPower + exPower;
+    if (Math.abs(newExtra - extra) < 0.5) break;
+    extra = newExtra;
+  }
+  return out;
+}
+function powerPlanHtml(factoryPower) {
+  const sel = `<label style="flex-direction:row;align-items:center;gap:6px">발전 방식
+    <select id="sel-gen">
+      <option value="none" ${state.gen === 'none' ? 'selected' : ''}>계산 안 함</option>
+      <option value="coal" ${state.gen === 'coal' ? 'selected' : ''}>석탄 (75MW)</option>
+      <option value="fuel" ${state.gen === 'fuel' ? 'selected' : ''}>연료 (250MW)</option>
+      <option value="turbo" ${state.gen === 'turbo' ? 'selected' : ''}>터보 연료 (250MW)</option>
+      <option value="nuclear" ${state.gen === 'nuclear' ? 'selected' : ''}>원자력 (2,500MW)</option>
+    </select></label>`;
+  const pp = powerPlan(factoryPower);
+  let body = '';
+  if (pp) {
+    body = `<div class="mach">${iconImg(pp.g.icon, 26)}
+      <span class="badge good">${pp.g.name} <b>×${pp.n}</b></span>
+      <span class="badge">발전 ${fmt(pp.gross)} MW ≥ 필요 ${fmt(pp.need)} MW</span>
+      <span class="badge">공장 ${fmt(factoryPower)} + 연료라인 ${fmt(pp.chainPower + pp.exPower)} MW</span></div>`;
+    if (pp.plans.length) {
+      body += `<div class="tip">연료 원자재: ` + pp.plans.map(pl =>
+        `<b>${koOf(pl.id)} ${fmt(pl.need)}${unitOf(pl.liq)}</b> (${pl.name} ×${pl.count}${pl.shortage > 1e-6 ? ' · <span style="color:var(--bad)">부족</span>' : ''})`).join(' · ') + `</div>`;
+    }
+    if (pp.chainStages.length) {
+      body += `<div class="tip">연료 생산 라인: ` + pp.chainStages.map(cs =>
+        `${iconImg(cs.item, 16)} ${koOf(cs.item)} ${fmt(cs.rate)}${unitOf(isLiq(cs.item))} — ${cs.ml.m.ko} <b>×${cs.ml.count}</b>(${fmt(cs.ml.clock)}%)`).join(' → ') + `</div>`;
+    }
+    const bp = Object.entries(pp.bypro || {}).filter(([, v]) => v > 1e-6);
+    if (bp.length) body += `<div class="tip">연료 라인 부산물: ${bp.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ')} — 재활용 또는 싱크</div>`;
+    if (state.gen === 'nuclear') body += `<div class="tip" style="color:var(--warn)">☢ 우라늄 폐기물이 계속 쌓입니다 — 소각 불가, 재처리 라인 또는 보관 계획 필수</div>`;
+  } else if (state.gen !== 'none') {
+    body = `<div class="tip">전력 수요가 없어 계산할 것이 없습니다.</div>`;
+  }
+  return `<div class="stage"><div class="head"><span class="t">⚡ 발전소 계획</span>${sel}</div>${body}</div>`;
 }
 
 /* ---------- 미션 모드 ----------
@@ -905,7 +1017,11 @@ function renderMission() {
     const reList = Object.entries(reused).filter(([, v]) => v > 1e-6);
     if (reList.length) html += `<br>♻ 부산물 재사용: ` + reList.map(([k, v]) => `<b>${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}</b>`).join(' · ');
     const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
-    if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ');
+    if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => {
+      const pts = D.items[k] && D.items[k].pts;
+      const note = isLiq(k) ? ' <span class="hint">(싱크 불가)</span>' : (pts ? ` <span class="hint">(싱크 ${fmt(v * pts)}pt/분)</span>` : '');
+      return `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}${note}`;
+    }).join(' · ');
     html += `</div>`;
   }
   const unplanned = plans.filter(p => p.unplanned);
@@ -929,6 +1045,7 @@ function renderMission() {
   html += `<div class="rsum">총 전력 (채굴 포함): <b>${fmt(totalPower)} MW</b> ·
     <span class="hint">시간을 절반으로 줄이면 기계·전력이 대략 두 배 — 목표 시간을 바꿔 비교해 보세요.
     ⚡ 안정화: 전력 저장고 <b>${storN}개</b>(피크 여유 20%) + 구역별 전력 스위치 권장</span></div>`;
+  html += powerPlanHtml(totalPower);
   box.innerHTML = html;
   attachHandlers(box, planned);
 }
@@ -969,8 +1086,17 @@ function renderResult() {
       (reList.some(([k]) => isLiq(k)) ? ' (액체 재순환은 재사용 파이프를 우선 접합으로)' : '') + `</span>`;
   }
   const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
-  if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ') +
-    ` <span class="hint">(싱크 소각 또는 저장)</span>`;
+  if (bpList.length) {
+    let ptsSum = 0;
+    html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => {
+      const pts = D.items[k] && D.items[k].pts;
+      let note = '';
+      if (isLiq(k)) note = ' <span class="hint">(액체 — 싱크 불가, 포장 필요)</span>';
+      else if (pts) { ptsSum += v * pts; note = ` <span class="hint">(싱크 ${fmt(v * pts)}pt/분)</span>`; }
+      return `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}${note}`;
+    }).join(' · ');
+    if (ptsSum > 0) html += ` — 합계 <b>${fmt(ptsSum)}pt/분</b> <span class="hint">(쿠폰 비용은 누적 발행 수에 따라 증가)</span>`;
+  }
   html += `</div>`;
 
   html += `<div class="rsum" style="font-size:13px">🔀 <b>분배기 상식</b> — 일렬로 늘어세운 분배기(매니폴드)는
@@ -1017,6 +1143,7 @@ function renderResult() {
   const storN = Math.max(1, Math.ceil(totalPower * 0.2 / 100));
   html += `<div class="rsum">총 전력 (채굴·추출 포함): <b>${fmt(totalPower)} MW</b>
     <span class="hint">· ⚡ 안정화: 전력 저장고 <b>${storN}개</b>(피크 여유 20%, 1개=100MWh) + 구역별 전력 스위치 권장 — 순간 과부하로 퓨즈가 내려가는 걸 막아줍니다</span></div>`;
+  html += powerPlanHtml(totalPower);
   box.innerHTML = html;
   attachHandlers(box, planned);
 }
@@ -1065,6 +1192,17 @@ $('sel-pipe').innerHTML = PIPES.map(([mk, cap]) => `<option value="${mk}">~Mk.${
     update();
   });
 })();
+const BELT_BY_TIER = { 0: 1, 1: 1, 2: 2, 3: 2, 4: 3, 5: 4, 6: 4, 7: 5, 8: 5, 9: 6 };
+$('sel-tier').innerHTML = `<option value="">프리셋…</option>` +
+  Object.keys(BELT_BY_TIER).map(t => `<option value="${t}">티어 ${t}</option>`).join('');
+$('sel-tier').addEventListener('change', () => {
+  if ($('sel-tier').value === '') return;
+  const t = +$('sel-tier').value;
+  state.maxBelt = BELT_BY_TIER[t];
+  state.maxPipe = t >= 8 ? 2 : 1;
+  update();
+  $('sel-tier').value = '';
+});
 $('sel-belt').addEventListener('change', () => { state.maxBelt = +$('sel-belt').value; update(); });
 $('sel-pipe').addEventListener('change', () => { state.maxPipe = +$('sel-pipe').value; update(); });
 nameMap = buildDatalist();
@@ -1090,5 +1228,15 @@ $('inp-target').addEventListener('change', () => {
 });
 $('btn-clear').addEventListener('click', () => {
   state.target = null; $('inp-target').value = ''; update();
+});
+$('btn-share').addEventListener('click', async () => {
+  const url = location.origin + location.pathname + '#s=' + btoa(unescape(encodeURIComponent(JSON.stringify(state))));
+  try {
+    await navigator.clipboard.writeText(url);
+    $('btn-share').textContent = '✓ 복사됨';
+  } catch (e) {
+    prompt('이 링크를 복사하세요:', url);
+  }
+  setTimeout(() => { $('btn-share').textContent = '🔗 공유 링크'; }, 1500);
 });
 update();
