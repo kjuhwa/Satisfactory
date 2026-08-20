@@ -302,6 +302,7 @@ function distGuide(item, ml, rate) {
     } else {
       html += isLiq(item) ? ` · 출력은 파이프 접합으로 합류</div>` : ` · 모으기: 합류기 ${N - 1}개 일렬</div>`;
     }
+    if (N > 2) html += `<div class="tip">💡 <b>인젝티드 매니폴드</b>: 공급 벨트를 라인 끝이 아니라 <b>중간에 꽂아 양쪽으로</b> 나누면 예열 시간이 절반으로 줄어듭니다</div>`;
     if (solidIns.length > 1) html += `<div class="tip">↳ 고체 입력이 ${solidIns.length}종이므로 재료마다 벨트·분배를 따로 구성합니다</div>`;
   }
   if (N > 1 && liqIns.length) {
@@ -718,7 +719,8 @@ function machineLine(item, rate) {
   if (minCount < count && minCount > 0) {
     const c2 = rate / (minCount * per) * 100;
     const sh = shardsFor(c2);
-    alt = `<div class="tip">💡 동력 조각을 쓰면 <b>${minCount}대 × ${fmt(c2)}%</b>로 줄일 수 있음 (조각 ${sh}개 × ${minCount}대 = ${sh * minCount}개, 전력 ↑)</div>`;
+    alt = `<div class="tip">💡 동력 조각을 쓰면 <b>${minCount}대 × ${fmt(c2)}%</b>로 줄일 수 있음 (조각 ${sh}개 × ${minCount}대 = ${sh * minCount}개, 전력 ↑)
+      — 단, <b>조각은 채굴기·시추기부터</b> 쓰는 게 정석입니다. 생산 기계는 증설이 보통 더 쌉니다</div>`;
   }
   const exact = Math.abs(clock - 100) < 0.05;
   return { r, per, count, clock, power, m, alt, exact };
@@ -762,6 +764,31 @@ function auxCardsHtml(planned) {
   return out;
 }
 
+/* 기계 바닥 크기(m, 실게임) → 청사진 설계기(Mk.1 32m/티어4, Mk.2 40m, Mk.3 48m)에 몇 대 들어가는지 */
+const FOOTPRINT = {
+  Desc_SmelterMk1_C: [6, 9], Desc_FoundryMk1_C: [10, 9], Desc_ConstructorMk1_C: [8, 10],
+  Desc_AssemblerMk1_C: [10, 15], Desc_ManufacturerMk1_C: [18, 20], Desc_OilRefinery_C: [10, 20],
+  Desc_Packager_C: [8, 8], Desc_Blender_C: [18, 16], Desc_Converter_C: [16, 20],
+  Desc_QuantumEncoder_C: [24, 36], Desc_HadronCollider_C: [24, 38],
+};
+const BP_SIZES = [[1, 32, '티어4'], [2, 40, '티어6'], [3, 48, '티어8']];
+function bpTip(ml) {
+  if (ml.count <= 1) return '';
+  const fp = FOOTPRINT[ml.r.machine];
+  if (!fp) return '';
+  const [w, l] = fp;
+  const fit = BP_SIZES.map(([mk, size, tier]) => ({
+    mk, size, tier,
+    per: Math.floor(size / (w + 2)) * Math.floor(size / (l + 2)),   // 벨트 여유 2m 포함
+  })).find(x => x.per >= 1);
+  if (!fit) return `<div class="tip">🧱 ${ml.m.ko}는 청사진 설계기에 들어가지 않는 크기 — 현장 직접 건설</div>`;
+  const sheets = Math.ceil(ml.count / fit.per);
+  if (sheets <= 1) return '';
+  const remain = ml.count % fit.per;
+  return `<div class="tip">🧱 <b>청사진 추천</b>: 설계기 Mk.${fit.mk}(${fit.size}m·${fit.tier}) 한 장에 ${ml.m.ko} <b>${fit.per}대</b>(벨트 여유 포함)
+    → 이 단계는 <b>청사진 ${sheets}장</b>${remain ? ` (마지막 장은 ${remain}대)` : ''} — 한 장 검증해서 복붙하면 건설이 빨라집니다</div>`;
+}
+
 /* 공정 단계 카드들: totals → {html, stages, stageInfo, power} */
 function stageCardsHtml(totals) {
   const stages = Object.entries(totals).filter(([, t]) => t.rate > 1e-6).sort((a, b) => b[1].depth - a[1].depth);
@@ -785,6 +812,7 @@ function stageCardsHtml(totals) {
         <span class="badge">⚡ ${fmt(ml.power)} MW</span>
         ${ml.count > 1 ? `<button class="ghost mini" data-nomerge="${item}">${state.noMerge[item] ? '↩ 한 줄로 모으기' : '합류기 생략 보기'}</button>` : ''}</div>
       ${distGuide(item, ml, t.rate)}
+      ${bpTip(ml)}
       ${ml.alt}
     </div>`;
   }
@@ -897,8 +925,10 @@ function renderMission() {
     </div>`;
   }
   const totalPower = planned.reduce((a, p) => a + p.power, 0) + sc.power;
+  const storN = Math.max(1, Math.ceil(totalPower * 0.2 / 100));
   html += `<div class="rsum">총 전력 (채굴 포함): <b>${fmt(totalPower)} MW</b> ·
-    <span class="hint">시간을 절반으로 줄이면 기계·전력이 대략 두 배 — 목표 시간을 바꿔 비교해 보세요</span></div>`;
+    <span class="hint">시간을 절반으로 줄이면 기계·전력이 대략 두 배 — 목표 시간을 바꿔 비교해 보세요.
+    ⚡ 안정화: 전력 저장고 <b>${storN}개</b>(피크 여유 20%) + 구역별 전력 스위치 권장</span></div>`;
   box.innerHTML = html;
   attachHandlers(box, planned);
 }
@@ -984,7 +1014,9 @@ function renderResult() {
       주괴처럼 1:1인 단계는 현지 가공해도 수송 이득이 없습니다. 초록 배지(≤50%)부터 벨트 수가 절반 이하로 줄어듭니다.
       현지 가공엔 전력이 필요하니 전력선을 같이 끌고 갈 것. 장거리 대량 수송은 트럭(티어 3)·기차(티어 6), 액체는 파이프 구간마다 펌프로 양정 확보.</span></div>`;
   }
-  html += `<div class="rsum">총 전력 (채굴·추출 포함): <b>${fmt(totalPower)} MW</b></div>`;
+  const storN = Math.max(1, Math.ceil(totalPower * 0.2 / 100));
+  html += `<div class="rsum">총 전력 (채굴·추출 포함): <b>${fmt(totalPower)} MW</b>
+    <span class="hint">· ⚡ 안정화: 전력 저장고 <b>${storN}개</b>(피크 여유 20%, 1개=100MWh) + 구역별 전력 스위치 권장 — 순간 과부하로 퓨즈가 내려가는 걸 막아줍니다</span></div>`;
   box.innerHTML = html;
   attachHandlers(box, planned);
 }
