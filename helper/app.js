@@ -43,6 +43,7 @@ let state = {
   maxBelt: 6,            // 해금된 벨트 티어
   maxPipe: 2,            // 해금된 파이프 티어
   auxPurity: {},         // 부수 원자재 매장지 순도 (item id -> impure|normal|pure)
+  auxDeps: {},           // 부수 원자재 매장지 직접 구성 (item id -> [{purity, mk?}])
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
@@ -52,6 +53,7 @@ state.noMerge = state.noMerge || {};
 state.maxBelt = state.maxBelt || 6;
 state.maxPipe = state.maxPipe || 2;
 state.auxPurity = state.auxPurity || {};
+state.auxDeps = state.auxDeps || {};
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
@@ -432,56 +434,94 @@ function stageDiagramCore(item, ml, rate) {
 }
 
 /* ---------- 부수 원자재 채굴 계획 (정석: 외부 공급 없이 전부 직접 캔다) ----------
- * 체인에 필요한 다른 원자재(석탄·석영·물…)도 채굴기/추출기 대수·클럭으로 계획.
- * 매장지 순도는 카드에서 선택(state.auxPurity, 기본 보통), 채굴기 Mk는 주 자원과 동일. */
+ * 체인에 필요한 다른 원자재(석탄·석영·물…)도 매장지 단위로 계획.
+ * 기본은 자동(보통 순도 × 필요한 대수), "매장지 직접 구성"으로 행을 추가하면
+ * 순도·채굴기 Mk가 다른 여러 매장지에 필요량을 균등 클럭으로 배분한다. */
+function auxBaseInfo(id) {
+  if (id === 'Desc_Water_C') return { base: 120, pwr: 20, icon: 'Desc_WaterPump_C', name: '양수기', hasPu: false };
+  if (id === 'Desc_LiquidOil_C') return { base: 120, pwr: 40, icon: 'Desc_OilPump_C', name: '원유 추출기', hasPu: true };
+  return null;   // null = 고체 (채굴기 Mk 선택 가능)
+}
+function auxRowSpec(id, row) {
+  const info = auxBaseInfo(id);
+  const pu = row.purity || 'normal';
+  const puDef = PURITY.find(p => p[0] === pu);
+  if (info) {
+    const mult = info.hasPu ? puDef[2] : 1;
+    return { eff: info.base * mult, pwr: info.pwr, icon: info.icon, name: info.name, puKo: info.hasPu ? puDef[1] : '' };
+  }
+  const mk = row.mk || (resKind() === 'miner' ? state.deps[0].mk : 1);
+  return { eff: MINER_BASE[mk] * puDef[2], pwr: MINER_PWR[mk], icon: `Desc_MinerMk${mk}_C`, name: `채굴기 Mk.${mk}`, puKo: puDef[1], mk };
+}
 function auxPlans(ext) {
   const plans = [];
   for (const [id, need] of Object.entries(ext)) {
     if (need <= 1e-6) continue;
     if (!isRaw(id) || id === 'Desc_NitrogenGas_C') { plans.push({ id, need, unplanned: true }); continue; }
     const liq = isLiq(id);
-    let base, pwr, icon, name, hasPu = true;
-    if (id === 'Desc_Water_C') { base = 120; pwr = 20; icon = 'Desc_WaterPump_C'; name = '양수기'; hasPu = false; }
-    else if (id === 'Desc_LiquidOil_C') { base = 120; pwr = 40; icon = 'Desc_OilPump_C'; name = '원유 추출기'; }
+    const cap = maxCap(liq);
+    const manualRows = state.auxDeps[id];
+    let rowDefs;
+    if (manualRows && manualRows.length) rowDefs = manualRows;
     else {
-      const mk = resKind() === 'miner' ? state.deps[0].mk : 1;
-      base = MINER_BASE[mk]; pwr = MINER_PWR[mk]; icon = `Desc_MinerMk${mk}_C`; name = `채굴기 Mk.${mk}`;
+      const info = auxBaseInfo(id);
+      const pu = info && !info.hasPu ? 'normal' : (state.auxPurity[id] || 'normal');
+      const sp = auxRowSpec(id, { purity: pu });
+      const per = Math.min(sp.eff, cap);
+      rowDefs = Array.from({ length: Math.ceil(need / per - 1e-9) }, () => ({ purity: pu }));
     }
-    const pu = hasPu ? (state.auxPurity[id] || 'normal') : null;
-    const puDef = pu ? PURITY.find(p => p[0] === pu) : null;
-    const eff = base * (puDef ? puDef[2] : 1);         // 순도 반영 원출력
-    const per = Math.min(eff, maxCap(liq));            // 한 대 실효 상한 (출력 포트 1개)
-    const count = Math.ceil(need / per - 1e-9);
-    const clock = need / (count * eff) * 100;
-    const power = pwr * count * Math.pow(clock / 100, EXP);
-    plans.push({ id, need, liq, count, clock, power, icon, name, pu, puKo: puDef ? puDef[1] : '' });
+    const specs = rowDefs.map(r => auxRowSpec(id, r));
+    // 필요량을 균등 클럭으로 배분 (한 대 상한 = min(순도 반영 출력, 벨트/파이프 한도))
+    const lim = specs.map(sp => Math.min(sp.eff, cap));
+    const out = specs.map(() => 0);
+    let rem = need, active = specs.map((_, i) => i);
+    for (let g = 0; g < 12 && rem > 1e-9 && active.length; g++) {
+      const tot = active.reduce((a, i) => a + specs[i].eff, 0);
+      const c = rem / tot;
+      const over = active.filter(i => out[i] + specs[i].eff * c > lim[i] - 1e-9);
+      if (!over.length) { for (const i of active) out[i] += specs[i].eff * c; rem = 0; break; }
+      for (const i of over) { rem -= lim[i] - out[i]; out[i] = lim[i]; }
+      active = active.filter(i => !over.includes(i));
+    }
+    const rows = specs.map((sp, i) => ({ ...sp, def: rowDefs[i], clock: out[i] / sp.eff * 100, rate: out[i] }));
+    const power = rows.reduce((a, r) => a + r.pwr * Math.pow(r.clock / 100, EXP), 0);
+    plans.push({
+      id, need, liq, rows, count: rows.length, power,
+      manual: !!(manualRows && manualRows.length),
+      shortage: Math.max(0, rem),
+      name: rows[0].name,
+    });
   }
   return plans;
 }
 
-/* 부수 원자재 채굴 배치도 (작은 추출 섹션) */
+/* 부수 원자재 채굴 배치도 (작은 추출 섹션, 매장지별 순도·클럭 표기) */
 function auxMineCore(pl) {
   const N = Math.min(pl.count, 10);
-  const cell = 78, x0 = 18, mergeY = 92, H = 124;
+  const cell = 84, x0 = 18, mergeY = 104, H = 138;
   const W = Math.max(x0 + N * cell + 250, 560);
   let s = '', taps = '';
   for (let i = 0; i < N; i++) {
+    const r = pl.rows[i];
     const cx = x0 + i * cell + cell / 2;
-    s += svgIcon(pl.icon, cx - 19, 4, 38);
-    s += `<text x="${cx}" y="${56}" text-anchor="middle" font-size="10" font-weight="700" fill="${BP.bright}">${fmt(pl.need / pl.count)}${unitOf(pl.liq)}</text>`;
-    s += `<line x1="${cx}" y1="60" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="2"/>`;
+    s += svgIcon(r.icon, cx - 19, 4, 38);
+    s += `<text x="${cx}" y="${55}" text-anchor="middle" font-size="9" fill="${BP.text}">${r.puKo ? r.puKo + ' · ' : ''}${fmt(r.clock)}%</text>`;
+    s += `<text x="${cx}" y="${69}" text-anchor="middle" font-size="10" font-weight="700" fill="${BP.bright}">${fmt(r.rate)}${unitOf(pl.liq)}</text>`;
+    s += `<line x1="${cx}" y1="73" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="2"/>`;
     if (pl.count > 1 && i > 0) taps += tapIcon(pl.liq, 'merge', cx, mergeY);
   }
   const col = pl.liq ? BP.pipe : BP.belt;
-  const f = flowFor(pl.need, pl.liq);
+  const f = flowFor(pl.need - pl.shortage, pl.liq);
   const x1 = x0 + cell / 2;
   s += `<line x1="${x1}" y1="${mergeY}" x2="${W - 190}" y2="${mergeY}" stroke="${col}" stroke-width="${pl.liq ? 5 : 3}" ${pl.liq ? '' : 'stroke-dasharray="7 4"'}/>`;
   s += `<polygon points="${W - 190},${mergeY - 5} ${W - 180},${mergeY} ${W - 190},${mergeY + 5}" fill="${col}"/>`;
   s += taps;
   if (pl.count > N) s += `<text x="${x0 + N * cell + 4}" y="36" font-size="13" font-weight="700" fill="${BP.text}">… ×${pl.count}</text>`;
-  s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(pl.need)}${unitOf(pl.liq)}</text>`;
+  s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(pl.need - pl.shortage)}${unitOf(pl.liq)}</text>`;
   s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${pl.count > 1 ? (pl.liq ? ' · 접합 ' + (pl.count - 1) + '곳' : ' · 합류기 ' + (pl.count - 1) + '개') : ''}</text>`;
-  s += `<text x="${x0}" y="${H - 6}" font-size="9.5" fill="#ffc94d">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%${pl.puKo ? ' · 순도 ' + pl.puKo : ''}</text>`;
+  s += pl.shortage > 1e-6
+    ? `<text x="${x0}" y="${H - 6}" font-size="9.5" font-weight="700" fill="#ff6b5e">⚠ ${fmt(pl.shortage)}${unitOf(pl.liq)} 부족 — 매장지 추가 필요</text>`
+    : `<text x="${x0}" y="${H - 6}" font-size="9.5" fill="#ffc94d">${pl.name} 외 ×${pl.count} · 필요량에 맞춰 클럭 자동 배분</text>`;
   return { s, W, H, outPort: { x: W - 180, y: mergeY, liq: pl.liq } };
 }
 
@@ -714,18 +754,37 @@ function renderResult() {
   html += `<div class="stage"><div class="head">${iconImg(state.res, 26)}<span class="t">채굴 · 추출</span>
     <span class="rate">${fmt(oreUsed)}${unitOf(isLiq(state.res))} 사용</span></div>${mineDiagram()}</div>`;
 
-  // 부수 원자재 채굴 카드 (정석: 전부 직접 캔다)
+  // 부수 원자재 채굴 카드 (정석: 전부 직접 캔다 · 매장지 여러 개 구성 가능)
   for (const pl of planned) {
     const c = auxMineCore(pl);
+    const info = auxBaseInfo(pl.id);
+    const solid = !info;
+    const hasPu = solid || (info && info.hasPu);
+    let rowsHtml = '';
+    if (pl.manual) {
+      rowsHtml = pl.rows.map((r, i) =>
+        `<div class="dep-row">` +
+        (hasPu ? `<label>순도<select data-aux="${pl.id}" data-i="${i}" data-k="purity">${PURITY.map(pp => `<option value="${pp[0]}" ${(r.def.purity || 'normal') === pp[0] ? 'selected' : ''}>${pp[1]} ×${pp[2]}</option>`).join('')}</select></label>` : `<span class="badge">${r.name}</span>`) +
+        (solid ? `<label>채굴기<select data-aux="${pl.id}" data-i="${i}" data-k="mk">${[1, 2, 3].map(m => `<option value="${m}" ${(r.mk || 1) === m ? 'selected' : ''}>Mk.${m} (${MINER_BASE[m]}/분)</option>`).join('')}</select></label>` : '') +
+        (pl.rows.length > 1 ? `<button class="ghost mini" data-auxdel="${pl.id}" data-i="${i}">✕</button>` : '') +
+        `<div class="dep-out"><b>${fmt(r.rate)}${unitOf(pl.liq)}</b> · 클럭 ${fmt(r.clock)}%</div></div>`
+      ).join('');
+      rowsHtml += `<div class="row" style="margin-top:8px">
+        <button class="ghost mini" data-auxadd="${pl.id}">＋ 매장지 추가</button>
+        <button class="ghost mini" data-auxauto="${pl.id}">↩ 자동 구성으로</button></div>`;
+    }
     html += `<div class="stage"><div class="head">${iconImg(pl.id, 26)}<span class="t">${koOf(pl.id)} 채굴·추출</span>
-      <span class="rate">${fmt(pl.need)}${unitOf(pl.liq)}</span></div>
+      <span class="rate">${fmt(pl.need)}${unitOf(pl.liq)} 필요</span></div>
       <div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>
+      ${rowsHtml}
       <div class="mach">
-        ${pl.pu ? `<label style="flex-direction:row;align-items:center;gap:6px">순도
-          <select data-auxpu="${pl.id}">${PURITY.map(p => `<option value="${p[0]}" ${pl.pu === p[0] ? 'selected' : ''}>${p[1]} ×${p[2]}</option>`).join('')}</select></label>` : ''}
-        <span class="badge good">${pl.name} ×${pl.count} · 각 ${fmt(pl.clock)}%</span>
-        ${flowBadge(pl.need, pl.liq)}
-        <span class="badge">⚡ ${fmt(pl.power)} MW</span></div>
+        ${!pl.manual && hasPu ? `<label style="flex-direction:row;align-items:center;gap:6px">순도
+          <select data-auxpu="${pl.id}">${PURITY.map(pp => `<option value="${pp[0]}" ${(state.auxPurity[pl.id] || 'normal') === pp[0] ? 'selected' : ''}>${pp[1]} ×${pp[2]}</option>`).join('')}</select></label>` : ''}
+        <span class="badge good">${pl.name} 외 ×${pl.count}</span>
+        ${flowBadge(pl.need - pl.shortage, pl.liq)}
+        <span class="badge">⚡ ${fmt(pl.power)} MW</span>
+        ${!pl.manual ? `<button class="ghost mini" data-auxman="${pl.id}">매장지 직접 구성 (여러 개)</button>` : ''}</div>
+      ${pl.shortage > 1e-6 ? `<div class="tip" style="color:var(--bad)">⚠ <b>${fmt(pl.shortage)}${unitOf(pl.liq)} 부족</b> — 매장지를 추가하거나 순도·채굴기를 올리세요. 부족한 만큼 이 재료를 쓰는 라인 전체가 감속합니다.</div>` : ''}
     </div>`;
   }
 
@@ -792,6 +851,40 @@ function renderResult() {
   }));
   box.querySelectorAll('select[data-auxpu]').forEach(s => s.addEventListener('change', () => {
     state.auxPurity[s.dataset.auxpu] = s.value;
+    update();
+  }));
+  box.querySelectorAll('select[data-aux]').forEach(s => s.addEventListener('change', () => {
+    const rows = state.auxDeps[s.dataset.aux];
+    if (!rows) return;
+    const k = s.dataset.k;
+    rows[+s.dataset.i][k] = k === 'mk' ? +s.value : s.value;
+    update();
+  }));
+  box.querySelectorAll('button[data-auxdel]').forEach(b => b.addEventListener('click', () => {
+    const rows = state.auxDeps[b.dataset.auxdel];
+    if (!rows) return;
+    rows.splice(+b.dataset.i, 1);
+    if (!rows.length) delete state.auxDeps[b.dataset.auxdel];
+    update();
+  }));
+  box.querySelectorAll('button[data-auxadd]').forEach(b => b.addEventListener('click', () => {
+    const rows = state.auxDeps[b.dataset.auxadd];
+    if (rows) rows.push({ ...rows[rows.length - 1] });
+    update();
+  }));
+  box.querySelectorAll('button[data-auxman]').forEach(b => b.addEventListener('click', () => {
+    const pl = planned.find(x => x.id === b.dataset.auxman);
+    if (!pl) return;
+    // 현재 자동 계획을 행으로 옮겨 시작점으로 삼는다
+    state.auxDeps[pl.id] = pl.rows.map(r => {
+      const def = { purity: r.def.purity || 'normal' };
+      if (r.mk) def.mk = r.mk;
+      return def;
+    });
+    update();
+  }));
+  box.querySelectorAll('button[data-auxauto]').forEach(b => b.addEventListener('click', () => {
+    delete state.auxDeps[b.dataset.auxauto];
     update();
   }));
 }
