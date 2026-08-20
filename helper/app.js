@@ -1081,6 +1081,19 @@ function renderMission() {
       <b>${fmt(bott.need / bott.w.max * 100)}%</b>를 차지합니다 — 가능은 하지만 맵을 대규모로 개발해야 하는 수준입니다. 시간을 늘리면 규모가 줄어듭니다.</div>`;
   }
 
+  // 탐사 노가다 경고: 매장지 개발 시간이 생산 시간보다 오래 걸리는 계획이면 시간 연장 권장
+  const maxPl = planned.reduce((m, pl) => (!m || pl.count > m.count ? pl : m), null);
+  if (maxPl && maxPl.count > 12) {
+    const sug = min * maxPl.count / 10;
+    const sugTxt = sug >= 60 ? `${Math.ceil(sug / 60)}시간` : `${Math.ceil(sug / 5) * 5}분`;
+    html += `<div class="rsum" style="border-color:var(--warn)">🏃 <b style="color:var(--warn)">탐사 노가다 주의</b> —
+      이 계획은 ${koOf(maxPl.id)} 매장지 <b>${maxPl.count}곳</b> 개발이 필요합니다. 넓은 지도에서 매장지를 찾고
+      전력·벨트를 잇는 시간이 생산 시간보다 오래 걸리기 쉽습니다.
+      <b>매장지 ~10곳 규모</b>로 하려면 목표 시간을 <b>약 ${sugTxt}</b>로 늘리세요 — 같은 미션이 채굴기 10대 안팎으로
+      끝나고, 그동안 다른 티어를 진행하면 됩니다. 순수 매장지 + 채굴기 Mk.3 250%는 매장지 한 곳당 20배(1,200/분)라
+      탐사보다 티어 업이 훨씬 이득입니다.</div>`;
+  }
+
   html += auxCardsHtml(planned);
   const sc = stageCardsHtml(totals);
   html += sc.html;
