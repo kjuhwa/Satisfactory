@@ -726,7 +726,7 @@ function renderResult() {
   const planned = plans.filter(p => !p.unplanned);
   if (planned.length) {
     html += `<br>부수 원자재 (채굴 계획 포함): ` + planned.map(p =>
-      `<b>${koOf(p.id)} ${fmt(p.need)}${unitOf(p.liq)}</b> <span class="hint">(${p.name} ×${p.count} · ${fmt(p.clock)}%)</span>`).join(' · ');
+      `<b>${koOf(p.id)} ${fmt(p.need)}${unitOf(p.liq)}</b> <span class="hint">(${p.name} ×${p.count}${p.shortage > 1e-6 ? ' · <span style="color:var(--bad)">부족!</span>' : ''})</span>`).join(' · ');
   }
   const unplanned = plans.filter(p => p.unplanned);
   if (unplanned.length) {

@@ -92,9 +92,36 @@ td .fit { color: var(--good); font-weight: 700; }
 .rsum b { color: var(--accent); }
 .ext { color: var(--warn); }
 
+#quick-table { overflow-x: auto; }
+#quick-table table { min-width: 430px; }
+
 @media (max-width: 640px) {
   body { font-size: 14px; }
+  header { padding: 16px 12px 2px; }
+  header h1 { font-size: 21px; }
+  header .sub { font-size: 12px; }
+  main { padding: 8px 8px; gap: 10px; }
+  .panel, .stage { padding: 12px 12px; border-radius: 10px; }
+  .row { gap: 8px; }
+  label { font-size: 12px; }
+  select, input { padding: 8px 8px; font-size: 14px; }
+  input#inp-target { width: 100%; max-width: 100%; }
+  button { padding: 9px 14px; font-size: 14px; }
+  .dep-row { gap: 6px; }
+  .dep-row .dep-out {
+    width: 100%; margin-left: 0; text-align: left;
+    display: flex; flex-wrap: wrap; gap: 4px 8px; align-items: center;
+  }
+  .stage .head { gap: 7px; }
+  .stage .head .t { font-size: 15px; }
   .stage .head .rate { width: 100%; margin-left: 0; }
+  .stage .head img { width: 28px; height: 28px; }
+  .badge { font-size: 11.5px; padding: 3px 8px; }
+  .mach { gap: 6px; font-size: 13px; }
+  .tip { font-size: 12px; }
+  .rsum { padding: 10px 12px; font-size: 13px; line-height: 1.7; }
+  .bp { padding: 6px 4px; }
+  th, td { padding: 6px 6px; font-size: 12.5px; }
 }
 
 .badge.pipe { color: #58a6ff; border-color: #29496b; }
