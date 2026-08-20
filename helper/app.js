@@ -734,6 +734,39 @@ function machineLine(item, rate) {
   return { r, per, count, clock, power, m, alt, exact };
 }
 
+/* ---------- 지도 자원 한계 (1.0 실측: 매장지 수 임순/보통/순수) ----------
+ * 한 매장지에는 채굴기 1대만 — 채굴기 N대 = 매장지 N곳.
+ * 이론상 최대 = 전 매장지에 채굴기 Mk.3 250% (임순 300/보통 600/순수 1200,
+ * 원유는 추출기 250%: 150/300/600). 물은 무제한. */
+const WORLD_NODES = {
+  Desc_OreIron_C: [39, 42, 46], Desc_OreCopper_C: [13, 29, 13], Desc_Stone_C: [15, 50, 29],
+  Desc_Coal_C: [15, 31, 16], Desc_OreGold_C: [0, 9, 8], Desc_RawQuartz_C: [3, 7, 7],
+  Desc_Sulfur_C: [6, 5, 5], Desc_OreBauxite_C: [5, 6, 6], Desc_OreUranium_C: [3, 2, 0],
+  Desc_SAM_C: [10, 6, 3], Desc_LiquidOil_C: [10, 12, 8],
+};
+function worldMaxOf(id) {
+  const w = WORLD_NODES[id];
+  if (!w) return null;
+  const per = id === 'Desc_LiquidOil_C' ? [150, 300, 600] : [300, 600, 1200];
+  return { nodes: w[0] + w[1] + w[2], max: w[0] * per[0] + w[1] * per[1] + w[2] * per[2] };
+}
+function worldWarn(pl) {
+  let html = '';
+  if (pl.count > 1) {
+    html += `<div class="tip">⛏ ${pl.name} ×${pl.count} = <b>서로 다른 매장지 ${pl.count}곳</b>이 필요합니다 — 한 매장지에는 채굴기 1대만 설치됩니다</div>`;
+  }
+  const w = worldMaxOf(pl.id);
+  if (!w) return html;
+  if (pl.need > w.max + 1e-6) {
+    html += `<div class="tip" style="color:var(--bad)">🌍 <b>맵 전체 한계 초과</b> — ${koOf(pl.id)}는 지도의 매장지 ${w.nodes}곳을 전부(채굴기 Mk.3 250%) 캐도 최대 <b>${w.max.toLocaleString('ko-KR')}/분</b>입니다. 필요 ${fmt(pl.need)}/분은 물리적으로 불가능 — 목표 시간을 늘리세요</div>`;
+  } else if (pl.count > w.nodes) {
+    html += `<div class="tip" style="color:var(--bad)">🌍 채굴기 ${pl.count}대가 필요하지만 맵 전체 ${koOf(pl.id)} 매장지는 <b>${w.nodes}곳</b>뿐 — 상위 채굴기·오버클럭·순도 높은 매장지로 대수를 줄여야 합니다</div>`;
+  } else if (pl.need > w.max * 0.2) {
+    html += `<div class="tip" style="color:var(--warn)">🌍 지도 전체 ${koOf(pl.id)} 한계(${w.max.toLocaleString('ko-KR')}/분)의 <b>${fmt(pl.need / w.max * 100)}%</b>를 이 계획에만 씁니다 — 비현실적이면 목표 시간을 늘리세요</div>`;
+  }
+  return html;
+}
+
 /* 부수 원자재 채굴 카드들 (정석: 전부 직접 캔다 · 매장지 여러 개 구성 가능) */
 function auxCardsHtml(planned) {
   let out = '';
@@ -766,6 +799,7 @@ function auxCardsHtml(planned) {
         ${flowBadge(pl.need - pl.shortage, pl.liq)}
         <span class="badge">⚡ ${fmt(pl.power)} MW</span>
         ${!pl.manual ? `<button class="ghost mini" data-auxman="${pl.id}">매장지 직접 구성 (여러 개)</button>` : ''}</div>
+      ${worldWarn(pl)}
       ${pl.shortage > 1e-6 ? `<div class="tip" style="color:var(--bad)">⚠ <b>${fmt(pl.shortage)}${unitOf(pl.liq)} 부족</b> — 매장지를 추가하거나 순도·채굴기를 올리세요. 부족한 만큼 이 재료를 쓰는 라인 전체가 감속합니다.</div>` : ''}
     </div>`;
   }
@@ -1030,6 +1064,23 @@ function renderMission() {
       `<span class="ext">${koOf(p.id)} ${fmt(p.need)}${unitOf(isLiq(p.id))}</span>`).join(' · ') + `</div>`;
   }
 
+  // 현실성 검증: 지도 전체 자원 한계 대비 병목 원자재 → 최소 완료 시간
+  let bott = null;
+  for (const pl of planned) {
+    const w = worldMaxOf(pl.id);
+    if (!w) continue;
+    const tMin = min * pl.need / w.max;    // 이 원자재만으로 걸리는 물리적 최소 시간
+    if (!bott || tMin > bott.t) bott = { id: pl.id, t: tMin, w, need: pl.need };
+  }
+  if (bott && bott.t > min + 1e-6) {
+    html += `<div class="rsum" style="border-color:var(--bad)">🌍 <b style="color:var(--bad)">이 목표 시간은 물리적으로 불가능합니다.</b>
+      병목은 <b>${koOf(bott.id)}</b> — 지도의 모든 매장지(${bott.w.nodes}곳)를 채굴기 Mk.3 250%로 캐도 ${bott.w.max.toLocaleString('ko-KR')}/분이 한계입니다.
+      이 미션의 물리적 최소 완료 시간은 <b>약 ${fmt(Math.ceil(bott.t))}분</b>이며, 실제로는 다른 공장과 자원을 나눠 쓰므로 그보다 훨씬 길게 잡아야 합니다.</div>`;
+  } else if (bott && bott.t > min * 0.2) {
+    html += `<div class="rsum" style="border-color:var(--warn)">🌍 <span style="color:var(--warn)">참고:</span> ${koOf(bott.id)}가 지도 전체 한계의
+      <b>${fmt(bott.need / bott.w.max * 100)}%</b>를 차지합니다 — 가능은 하지만 맵을 대규모로 개발해야 하는 수준입니다. 시간을 늘리면 규모가 줄어듭니다.</div>`;
+  }
+
   html += auxCardsHtml(planned);
   const sc = stageCardsHtml(totals);
   html += sc.html;
@@ -1182,7 +1233,7 @@ $('sel-pipe').innerHTML = PIPES.map(([mk, cap]) => `<option value="${mk}">~Mk.${
   });
   $('sel-mission').innerHTML = `<option value="">— 사용 안 함 —</option>` +
     Object.entries(groups).map(([g, os]) => `<optgroup label="${g}">${os.join('')}</optgroup>`).join('');
-  $('sel-mtime').innerHTML = [15, 30, 60, 120, 240].map(m => `<option value="${m}">${m}분</option>`).join('');
+  $('sel-mtime').innerHTML = [15, 30, 60, 120, 240, 480, 960].map(m => `<option value="${m}">${m >= 60 ? (m / 60) + '시간' : m + '분'}</option>`).join('');
   $('sel-mission').addEventListener('change', () => {
     state.mission = $('sel-mission').value === '' ? null : { i: +$('sel-mission').value, min: +$('sel-mtime').value || 60 };
     update();
