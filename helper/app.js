@@ -936,6 +936,11 @@ function attachHandlers(box, planned) {
   }));
   const gs = box.querySelector('#sel-gen');
   if (gs) gs.addEventListener('change', () => { state.gen = gs.value; update(); });
+  const st = box.querySelector('button[data-suggest-time]');
+  if (st) st.addEventListener('click', () => {
+    const sug = suggestMissionTime();
+    if (sug && state.mission) { state.mission.min = sug; update(); }
+  });
 }
 
 /* ---------- 발전소 계획 ----------
@@ -1019,6 +1024,30 @@ function powerPlanHtml(factoryPower) {
 /* ---------- 미션 모드 ----------
  * 마일스톤(데이터) + 우주 엘리베이터 단계(1.0 기준 수치)를 골라
  * 요구 물품 전부를 목표 시간 안에 만드는 공장을 통째로 설계한다. */
+/* 마일스톤 한글 이름 (게임 공식 번역 기준) */
+const MS_KO = {
+  'Base Building': '기지 건설', 'Field Research': '현장 연구', 'Logistics': '물류',
+  'Jump Pads': '점프 패드', 'Logistics Mk.2': '물류 Mk.2', 'Obstacle Clearing': '장애물 제거',
+  'Part Assembly': '부품 조립', 'Resource Sink Bonus Program': '자원 싱크 보너스 프로그램',
+  'Basic Steel Production': '기본 강철 생산', 'Coal Power': '석탄 발전',
+  'Enhanced Asset Security': '강화된 자산 보안', 'Vehicular Transport': '차량 운송',
+  'Advanced Steel Production': '고급 강철 생산', 'Expanded Power Infrastructure': '확장된 전력 인프라',
+  'FICSIT Blueprints': 'FICSIT 청사진', 'Hypertubes': '하이퍼 튜브', 'Logistics Mk.3': '물류 Mk.3',
+  'Fluid Packaging': '유체 포장', 'Jetpack': '제트팩', 'Logistics Mk.4': '물류 Mk.4',
+  'Oil Processing': '석유 처리', 'Petroleum Power': '석유 발전',
+  'FICSIT Blueprints Mk.2': 'FICSIT 청사진 Mk.2', 'Industrial Manufacturing': '산업 제조',
+  'Monorail Train Technology': '모노레일 열차 기술', 'Pipeline Engineering Mk.2': '파이프라인 공학 Mk.2',
+  'Railway Signalling': '철도 신호', 'Bauxite Refinement': '보크사이트 정제',
+  'Control System Development': '제어 시스템 개발', 'Hazmat Suit': '방호복', 'Hoverpack': '호버팩',
+  'Logistics Mk.5': '물류 Mk.5', 'Advanced Aluminum Production': '고급 알루미늄 생산',
+  'Aeronautical Engineering': '항공 공학', 'Leading-Edge Production': '첨단 생산',
+  'Nuclear Power': '원자력 발전', 'Particle Enrichment': '입자 농축',
+  'FICSIT Blueprints Mk.3': 'FICSIT 청사진 Mk.3', 'Matter Conversion': '물질 변환',
+  'Peak Efficiency': '최고 효율', 'Quantum Encoding': '양자 인코딩',
+  'Spatial Energy Regulation': '공간 에너지 조절',
+};
+const msName = m => MS_KO[m.n] || m.n;
+
 const ELEVATOR = [
   { n: '우주 엘리베이터 1단계', tier: '엘리베이터', cost: [['Desc_SpaceElevatorPart_1_C', 50]] },
   { n: '우주 엘리베이터 2단계', tier: '엘리베이터', cost: [['Desc_SpaceElevatorPart_1_C', 500], ['Desc_SpaceElevatorPart_2_C', 500], ['Desc_SpaceElevatorPart_3_C', 100]] },
@@ -1030,6 +1059,29 @@ function missionList() {
   return [...(D.missions || []), ...ELEVATOR];
 }
 
+function fmtMin(m) {
+  if (m >= 60) {
+    const h = Math.floor(m / 60), r = Math.round(m % 60);
+    return r ? `${h}시간 ${r}분` : `${h}시간`;
+  }
+  return `${m}분`;
+}
+/* 매장지 ~10곳 규모가 되는 목표 시간(분) 계산 — 최다 채굴기 원자재 기준 */
+function suggestMissionTime() {
+  if (!state.mission) return null;
+  const ms = missionList()[state.mission.i];
+  if (!ms) return null;
+  const min = state.mission.min;
+  const targets = ms.cost.map(([item, qty]) => ({ item, rate: qty / min }));
+  const chain = solveMission(targets);
+  const planned = auxPlans(chain.ext, true).filter(pl => !pl.unplanned);
+  const maxPl = planned.reduce((m, pl) => (!m || pl.count > m.count ? pl : m), null);
+  if (!maxPl || maxPl.count <= 10) return null;
+  let sug = min * maxPl.count / 10;
+  sug = sug >= 60 ? Math.ceil(sug / 30) * 30 : Math.ceil(sug / 5) * 5;   // 30분/5분 단위 올림
+  return sug;
+}
+
 function renderMission() {
   const box = $('result');
   const ms = missionList()[state.mission.i];
@@ -1038,7 +1090,7 @@ function renderMission() {
   const targets = ms.cost.map(([item, qty]) => ({ item, rate: qty / min }));
   const { totals, ext, bypro, reused } = solveMission(targets);
 
-  let html = `<div class="rsum">🎯 <b>${ms.n}</b> ${typeof ms.tier === 'number' ? `<span class="hint">(티어 ${ms.tier})</span>` : ''} — <b>${min}분</b> 안에 완료 목표<br>
+  let html = `<div class="rsum">🎯 <b>${msName(ms)}</b> ${typeof ms.tier === 'number' ? `<span class="hint">(티어 ${ms.tier})</span>` : ''} — <b>${min}분</b> 안에 완료 목표<br>
     요구 물품: ` + ms.cost.map(([it, q]) => `${iconImg(it, 18)} <b>${koOf(it)} ×${q.toLocaleString('ko-KR')}</b> <span class="hint">(${fmt(q / min)}/분)</span>`).join(' · ') +
     `<br><span class="hint">아래 세팅이면 모든 물품이 정확히 ${min}분 뒤 목표 수량에 도달합니다.
     미션 모드에서는 1번 패널의 매장지 대신 모든 원자재를 아래 채굴 카드에서 계획합니다.</span></div>`;
@@ -1091,7 +1143,8 @@ function renderMission() {
       전력·벨트를 잇는 시간이 생산 시간보다 오래 걸리기 쉽습니다.
       <b>매장지 ~10곳 규모</b>로 하려면 목표 시간을 <b>약 ${sugTxt}</b>로 늘리세요 — 같은 미션이 채굴기 10대 안팎으로
       끝나고, 그동안 다른 티어를 진행하면 됩니다. 순수 매장지 + 채굴기 Mk.3 250%는 매장지 한 곳당 20배(1,200/분)라
-      탐사보다 티어 업이 훨씬 이득입니다.</div>`;
+      탐사보다 티어 업이 훨씬 이득입니다.
+      <div style="margin-top:8px"><button data-suggest-time>⏱ 매장지 10곳 기준으로 시간 자동 설정</button></div></div>`;
   }
 
   html += auxCardsHtml(planned);
@@ -1226,7 +1279,15 @@ function update() {
   $('sel-belt').value = state.maxBelt;
   $('sel-pipe').value = state.maxPipe;
   $('sel-mission').value = state.mission ? String(state.mission.i) : '';
-  $('sel-mtime').value = state.mission ? String(state.mission.min) : '60';
+  if (state.mission) {
+    const mt = $('sel-mtime');
+    if (mt.options.length && ![...mt.options].some(o => o.value === String(state.mission.min))) {
+      mt.insertAdjacentHTML('beforeend', `<option value="${state.mission.min}">${fmtMin(state.mission.min)} (추천)</option>`);
+    }
+    mt.value = String(state.mission.min);
+  } else {
+    $('sel-mtime').value = '60';
+  }
   buildDepRows();
   buildQuickTable();
   renderMineSummary();
@@ -1242,7 +1303,7 @@ $('sel-pipe').innerHTML = PIPES.map(([mk, cap]) => `<option value="${mk}">~Mk.${
   const groups = {};
   list.forEach((m, i) => {
     const g = typeof m.tier === 'number' ? `티어 ${m.tier}` : '우주 엘리베이터';
-    (groups[g] = groups[g] || []).push(`<option value="${i}">${m.n}</option>`);
+    (groups[g] = groups[g] || []).push(`<option value="${i}">${msName(m)}</option>`);
   });
   $('sel-mission').innerHTML = `<option value="">— 사용 안 함 —</option>` +
     Object.entries(groups).map(([g, os]) => `<optgroup label="${g}">${os.join('')}</optgroup>`).join('');
