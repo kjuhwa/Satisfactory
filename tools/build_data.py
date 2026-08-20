@@ -106,6 +106,17 @@ for cn in ['Desc_MinerMk1_C', 'Desc_MinerMk2_C', 'Desc_MinerMk3_C',
            'Desc_GeneratorCoal_C', 'Desc_GeneratorFuel_C', 'Desc_GeneratorNuclear_C']:
     xnames[cn] = ko_machine(cn) or cn
 
+# 마일스톤 (임무): 티어별 요구 물품
+missions = []
+for sc in d['schematics'].values():
+    if sc.get('type') != 'EST_Milestone':
+        continue
+    cost = [[c['item'], c['amount']] for c in sc.get('cost', []) if c['item'] in items]
+    if not cost:
+        continue
+    missions.append({'n': sc['name'], 'tier': sc.get('tier', 0), 'cost': cost})
+missions.sort(key=lambda m: (m['tier'], m['n']))
+
 out = {
     'items': items,
     'recipes': recipes,
@@ -113,6 +124,7 @@ out = {
     'raw': raw,
     'build': build,
     'xnames': xnames,
+    'missions': missions,
 }
 os.makedirs(os.path.dirname(DST), exist_ok=True)
 with open(DST, 'w', encoding='utf-8') as f:

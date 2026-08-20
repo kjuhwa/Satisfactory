@@ -44,6 +44,7 @@ let state = {
   maxPipe: 2,            // 해금된 파이프 티어
   auxPurity: {},         // 부수 원자재 매장지 순도 (item id -> impure|normal|pure)
   auxDeps: {},           // 부수 원자재 매장지 직접 구성 (item id -> [{purity, mk?}])
+  mission: null,         // 미션 모드 {i: missionList 인덱스, min: 목표 분}
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
@@ -172,7 +173,7 @@ function orePerUnit(item, visiting = new Set()) {
   return acc;
 }
 
-function buildChain(targetRate, credits) {
+function buildChain(targets, credits, mainRes) {
   const totals = {};   // item -> {rate, depth}
   const ext = {};      // 외부 공급 item -> rate
   const bypro = {};    // 부산물 item -> rate
@@ -188,7 +189,7 @@ function buildChain(targetRate, credits) {
       rate -= u;
       if (rate <= 1e-12) return;
     }
-    if (item === state.res) { oreUsed += rate; return; }
+    if (mainRes && item === mainRes) { oreUsed += rate; return; }
     if (isRaw(item) || !byOut[item] || visiting.has(item)) { ext[item] = (ext[item] || 0) + rate; return; }
     const t = totals[item] || (totals[item] = { rate: 0, depth: 0 });
     t.rate += rate;
@@ -200,7 +201,7 @@ function buildChain(targetRate, credits) {
     for (const [ing, q] of r.in) walk(ing, rate * q / outQty, depth + 1, visiting);
     visiting.delete(item);
   };
-  walk(state.target, targetRate, 0, new Set());
+  for (const tg of targets) walk(tg.item, tg.rate, 0, new Set());
   return { totals, ext, bypro, reused, oreUsed };
 }
 
@@ -210,7 +211,7 @@ function solveChain(E, orePer) {
   let credits = {};
   let chain = null;
   for (let it = 0; it < 10; it++) {
-    chain = buildChain(targetRate, credits);
+    chain = buildChain([{ item: state.target, rate: targetRate }], credits, state.res);
     let stable = true;
     for (const k of new Set([...Object.keys(chain.bypro), ...Object.keys(credits)])) {
       if (Math.abs((chain.bypro[k] || 0) - (credits[k] || 0)) > 1e-6) { stable = false; break; }
@@ -223,6 +224,22 @@ function solveChain(E, orePer) {
     if (stable) break;
   }
   chain.targetRate = targetRate;
+  return chain;
+}
+
+/* 미션 모드: 목표 생산 속도들이 고정 — 부산물 재사용만 수렴시킨다 */
+function solveMission(targets) {
+  let credits = {};
+  let chain = null;
+  for (let it = 0; it < 10; it++) {
+    chain = buildChain(targets, credits, null);
+    let stable = true;
+    for (const k of new Set([...Object.keys(chain.bypro), ...Object.keys(credits)])) {
+      if (Math.abs((chain.bypro[k] || 0) - (credits[k] || 0)) > 1e-6) { stable = false; break; }
+    }
+    credits = chain.bypro;
+    if (stable) break;
+  }
   return chain;
 }
 
@@ -528,11 +545,13 @@ function auxMineCore(pl) {
 /* ---------- 전체 배치도 (합성) ----------
  * 위에 개별로 그린 채굴/단계 배치도를 그대로 세로로 이어 붙이고,
  * 단계 사이를 실제 벨트/파이프 연결선(오른쪽 레인 경유)으로 잇는다. */
-function composedDiagram(stageInfo, reused, oreUsed, plans) {
+function composedDiagram(stageInfo, reused, oreUsed, plans, includeMain = true) {
   const GAP = 46;
   const secs = [];
-  const mine = mineDiagramCore();
-  secs.push({ key: '@ore', title: `${koOf(state.res)} 채굴 · ${fmt(oreUsed)}${unitOf(isLiq(state.res))}`, core: mine, item: state.res });
+  if (includeMain) {
+    const mine = mineDiagramCore();
+    secs.push({ key: '@ore', title: `${koOf(state.res)} 채굴 · ${fmt(oreUsed)}${unitOf(isLiq(state.res))}`, core: mine, item: state.res });
+  }
   for (const pl of (plans || []).filter(p => !p.unplanned)) {
     secs.push({ key: pl.id, title: `${koOf(pl.id)} 채굴·추출 · ${fmt(pl.need)}${unitOf(pl.liq)}`, core: auxMineCore(pl), item: pl.id });
   }
@@ -705,56 +724,9 @@ function machineLine(item, rate) {
   return { r, per, count, clock, power, m, alt, exact };
 }
 
-function renderResult() {
-  const box = $('result');
-  const E = totalMine();
-  if (!state.target) { box.innerHTML = ''; return; }
-  if (state.target === state.res) { box.innerHTML = '<div class="rsum">목표가 캐는 자원 그 자체입니다 — 위의 벨트/파이프 추천을 그대로 쓰면 됩니다.</div>'; return; }
-
-  const unit = orePerUnit(state.target);
-  if (unit.ore <= 1e-12) {
-    box.innerHTML = `<div class="rsum">⚠ 현재 선택된 레시피 조합으로는 <b>${koOf(state.target)}</b> 생산에 <b>${koOf(state.res)}</b>이(가) 쓰이지 않습니다. 단계별 레시피를 바꿔 보세요.</div>`;
-    return;
-  }
-  const { totals, ext, bypro, reused, oreUsed, targetRate } = solveChain(E, unit.ore);
-
-  // 요약
-  let html = `<div class="rsum">채굴 <b>${fmt(E)}${unitOf(isLiq(state.res))}</b> (${koOf(state.res)}) 전부 투입 →
-    <b>${koOf(state.target)} ${fmt(targetRate)}${unitOf(isLiq(state.target))}</b> 생산.
-    아래 세팅이면 <b>어느 기계도 놀지 않습니다</b> (재료가 정확히 맞물림).`;
-  const plans = auxPlans(ext);
-  const planned = plans.filter(p => !p.unplanned);
-  if (planned.length) {
-    html += `<br>부수 원자재 (채굴 계획 포함): ` + planned.map(p =>
-      `<b>${koOf(p.id)} ${fmt(p.need)}${unitOf(p.liq)}</b> <span class="hint">(${p.name} ×${p.count}${p.shortage > 1e-6 ? ' · <span style="color:var(--bad)">부족!</span>' : ''})</span>`).join(' · ');
-  }
-  const unplanned = plans.filter(p => p.unplanned);
-  if (unplanned.length) {
-    html += `<br>별도 라인 필요: ` + unplanned.map(p =>
-      `<span class="ext">${koOf(p.id)} ${fmt(p.need)}${unitOf(isLiq(p.id))}</span>`).join(' · ');
-  }
-  const reList = Object.entries(reused).filter(([, v]) => v > 1e-6);
-  if (reList.length) {
-    html += `<br>♻ 부산물 재사용: ` + reList.map(([k, v]) =>
-      `<b>${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}</b>`).join(' · ') +
-      ` <span class="hint">— 부산물을 해당 라인 입력으로 되돌려 잇는 만큼 원자재·기계가 줄어 있습니다` +
-      (reList.some(([k]) => isLiq(k)) ? ' (액체 재순환은 재사용 파이프를 우선 접합으로)' : '') + `</span>`;
-  }
-  const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
-  if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ') +
-    ` <span class="hint">(싱크 소각 또는 저장)</span>`;
-  html += `</div>`;
-
-  html += `<div class="rsum" style="font-size:13px">🔀 <b>분배기 상식</b> — 일렬로 늘어세운 분배기(매니폴드)는
-    처음에 <b>앞쪽 기계만 재료를 받습니다</b>. 고장이 아니라, 기계 버퍼가 차면 남는 재료가 뒤로 흘러
-    몇 분 뒤 전원 100%로 맞춰집니다 (총 공급 = 총 소비이기만 하면 됨 — 아래 세팅이 그 상태).
-    기다리기 싫으면 각 단계의 <b>균형 트리</b> 구성을 쓰세요. 액체는 파이프 접합만으로 자연 균형입니다.</div>`;
-
-  // 채굴 배치도
-  html += `<div class="stage"><div class="head">${iconImg(state.res, 26)}<span class="t">채굴 · 추출</span>
-    <span class="rate">${fmt(oreUsed)}${unitOf(isLiq(state.res))} 사용</span></div>${mineDiagram()}</div>`;
-
-  // 부수 원자재 채굴 카드 (정석: 전부 직접 캔다 · 매장지 여러 개 구성 가능)
+/* 부수 원자재 채굴 카드들 (정석: 전부 직접 캔다 · 매장지 여러 개 구성 가능) */
+function auxCardsHtml(planned) {
+  let out = '';
   for (const pl of planned) {
     const c = auxMineCore(pl);
     const info = auxBaseInfo(pl.id);
@@ -773,7 +745,7 @@ function renderResult() {
         <button class="ghost mini" data-auxadd="${pl.id}">＋ 매장지 추가</button>
         <button class="ghost mini" data-auxauto="${pl.id}">↩ 자동 구성으로</button></div>`;
     }
-    html += `<div class="stage"><div class="head">${iconImg(pl.id, 26)}<span class="t">${koOf(pl.id)} 채굴·추출</span>
+    out += `<div class="stage"><div class="head">${iconImg(pl.id, 26)}<span class="t">${koOf(pl.id)} 채굴·추출</span>
       <span class="rate">${fmt(pl.need)}${unitOf(pl.liq)} 필요</span></div>
       <div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>
       ${rowsHtml}
@@ -787,16 +759,18 @@ function renderResult() {
       ${pl.shortage > 1e-6 ? `<div class="tip" style="color:var(--bad)">⚠ <b>${fmt(pl.shortage)}${unitOf(pl.liq)} 부족</b> — 매장지를 추가하거나 순도·채굴기를 올리세요. 부족한 만큼 이 재료를 쓰는 라인 전체가 감속합니다.</div>` : ''}
     </div>`;
   }
+  return out;
+}
 
-  // 단계: 깊은 것(원자재 쪽)부터 (재사용으로 0이 된 라인은 제외)
+/* 공정 단계 카드들: totals → {html, stages, stageInfo, power} */
+function stageCardsHtml(totals) {
   const stages = Object.entries(totals).filter(([, t]) => t.rate > 1e-6).sort((a, b) => b[1].depth - a[1].depth);
-  let totalPower = state.deps.reduce((s, d) => s + depPower(d), 0)
-    + planned.reduce((s, p) => s + p.power, 0);
   const stageInfo = [];
+  let power = 0, html = '';
   for (const [item, t] of stages) {
     const ml = machineLine(item, t.rate);
     stageInfo.push({ item, t, ml });
-    totalPower += ml.power;
+    power += ml.power;
     const recipes = byOut[item];
     const selHtml = recipes.length > 1
       ? `<select data-item="${item}">${recipes.map(r => `<option value="${r.id}" ${r.id === ml.r.id ? 'selected' : ''}>${r.alt ? '★ ' : ''}${r.ko || r.name}</option>`).join('')}</select>`
@@ -814,32 +788,11 @@ function renderResult() {
       ${ml.alt}
     </div>`;
   }
-  // 🗺 전체 배치도 — 채굴부터 목표까지 한 장으로
-  if (stageInfo.length) {
-    html += `<div class="stage">
-      <div class="head"><span class="t">🗺 전체 배치도</span>
-        <span class="hint">위의 채굴·단계 배치도를 그대로 이어 붙인 전체 그림 — 단계 사이 연결선은 오른쪽 레인을 타고 내려갑니다.
-        점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span></span></div>
-      ${composedDiagram(stageInfo, reused, oreUsed, plans)}
-    </div>`;
-  }
+  return { html, stages, stageInfo, power };
+}
 
-  // 🚚 수송 가이드 — 매장지가 멀 때: 단계별 벨트 부하(광석 대비)로 "어디까지 현지 가공할지" 판단
-  if (stages.length >= 1) {
-    let chips = `<span class="badge">${iconImg(state.res, 16)} ${koOf(state.res)} ${fmt(oreUsed)}${unitOf(isLiq(state.res))} <b>100%</b></span>`;
-    for (const [item, t] of stages) {
-      const pct = t.rate / oreUsed * 100;
-      chips += ` ▸ <span class="badge ${pct <= 50 ? 'good' : ''}">${iconImg(item, 16)} ${koOf(item)} ${fmt(t.rate)}${unitOf(isLiq(item))} <b>${fmt(pct)}%</b></span>`;
-    }
-    html += `<div class="rsum" style="font-size:13px">🚚 <b>수송 가이드</b> — 매장지가 멀면 전부 본진으로 끌고 오지 말고,
-      <b>부하(%)가 뚝 떨어지는 단계까지 매장지 옆에서 가공</b>한 뒤 그것만 나르세요.<br>
-      <div style="margin:6px 0; line-height:2.2">${chips}</div>
-      <span class="hint">%는 광석 벨트 대비 나를 양. 벨트·파이프는 아무리 길어도 손실이 없으니(건설비뿐) 초반엔 그냥 길게 잇는 게 정답이고,
-      주괴처럼 1:1인 단계는 현지 가공해도 수송 이득이 없습니다. 초록 배지(≤50%)부터 벨트 수가 절반 이하로 줄어듭니다.
-      현지 가공엔 전력이 필요하니 전력선을 같이 끌고 갈 것. 장거리 대량 수송은 트럭(티어 3)·기차(티어 6), 액체는 파이프 구간마다 펌프로 양정 확보.</span></div>`;
-  }
-  html += `<div class="rsum">총 전력 (채굴·추출 포함): <b>${fmt(totalPower)} MW</b></div>`;
-  box.innerHTML = html;
+/* 결과 영역 공용 이벤트 배선 (레시피/합류기/부수 매장지) */
+function attachHandlers(box, planned) {
   box.querySelectorAll('select[data-item]').forEach(s => s.addEventListener('change', () => {
     state.recipeSel[s.dataset.item] = s.value;
     update();
@@ -889,6 +842,153 @@ function renderResult() {
   }));
 }
 
+/* ---------- 미션 모드 ----------
+ * 마일스톤(데이터) + 우주 엘리베이터 단계(1.0 기준 수치)를 골라
+ * 요구 물품 전부를 목표 시간 안에 만드는 공장을 통째로 설계한다. */
+const ELEVATOR = [
+  { n: '우주 엘리베이터 1단계', tier: '엘리베이터', cost: [['Desc_SpaceElevatorPart_1_C', 50]] },
+  { n: '우주 엘리베이터 2단계', tier: '엘리베이터', cost: [['Desc_SpaceElevatorPart_1_C', 500], ['Desc_SpaceElevatorPart_2_C', 500], ['Desc_SpaceElevatorPart_3_C', 100]] },
+  { n: '우주 엘리베이터 3단계', tier: '엘리베이터', cost: [['Desc_SpaceElevatorPart_2_C', 2500], ['Desc_SpaceElevatorPart_4_C', 500], ['Desc_SpaceElevatorPart_5_C', 100]] },
+  { n: '우주 엘리베이터 4단계', tier: '엘리베이터', cost: [['Desc_SpaceElevatorPart_7_C', 500], ['Desc_SpaceElevatorPart_6_C', 500], ['Desc_SpaceElevatorPart_8_C', 250], ['Desc_SpaceElevatorPart_9_C', 100]] },
+  { n: '우주 엘리베이터 5단계', tier: '엘리베이터', cost: [['Desc_SpaceElevatorPart_9_C', 1000], ['Desc_SpaceElevatorPart_10_C', 1000], ['Desc_SpaceElevatorPart_12_C', 256], ['Desc_SpaceElevatorPart_11_C', 200]] },
+];
+function missionList() {
+  return [...(D.missions || []), ...ELEVATOR];
+}
+
+function renderMission() {
+  const box = $('result');
+  const ms = missionList()[state.mission.i];
+  if (!ms) { box.innerHTML = ''; return; }
+  const min = state.mission.min;
+  const targets = ms.cost.map(([item, qty]) => ({ item, rate: qty / min }));
+  const { totals, ext, bypro, reused } = solveMission(targets);
+
+  let html = `<div class="rsum">🎯 <b>${ms.n}</b> ${typeof ms.tier === 'number' ? `<span class="hint">(티어 ${ms.tier})</span>` : ''} — <b>${min}분</b> 안에 완료 목표<br>
+    요구 물품: ` + ms.cost.map(([it, q]) => `${iconImg(it, 18)} <b>${koOf(it)} ×${q.toLocaleString('ko-KR')}</b> <span class="hint">(${fmt(q / min)}/분)</span>`).join(' · ') +
+    `<br><span class="hint">아래 세팅이면 모든 물품이 정확히 ${min}분 뒤 목표 수량에 도달합니다.
+    미션 모드에서는 1번 패널의 매장지 대신 모든 원자재를 아래 채굴 카드에서 계획합니다.</span></div>`;
+
+  const plans = auxPlans(ext);
+  const planned = plans.filter(p => !p.unplanned);
+  if (planned.length) {
+    html += `<div class="rsum">원자재 채굴 계획: ` + planned.map(p =>
+      `<b>${koOf(p.id)} ${fmt(p.need)}${unitOf(p.liq)}</b> <span class="hint">(${p.name} ×${p.count}${p.shortage > 1e-6 ? ' · <span style="color:var(--bad)">부족!</span>' : ''})</span>`).join(' · ');
+    const reList = Object.entries(reused).filter(([, v]) => v > 1e-6);
+    if (reList.length) html += `<br>♻ 부산물 재사용: ` + reList.map(([k, v]) => `<b>${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}</b>`).join(' · ');
+    const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
+    if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ');
+    html += `</div>`;
+  }
+  const unplanned = plans.filter(p => p.unplanned);
+  if (unplanned.length) {
+    html += `<div class="rsum">별도 라인 필요: ` + unplanned.map(p =>
+      `<span class="ext">${koOf(p.id)} ${fmt(p.need)}${unitOf(isLiq(p.id))}</span>`).join(' · ') + `</div>`;
+  }
+
+  html += auxCardsHtml(planned);
+  const sc = stageCardsHtml(totals);
+  html += sc.html;
+  if (sc.stageInfo.length) {
+    html += `<div class="stage">
+      <div class="head"><span class="t">🗺 전체 배치도</span>
+        <span class="hint">원자재 채굴부터 미션 물품까지 — 점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span></span></div>
+      ${composedDiagram(sc.stageInfo, reused, 0, plans, false)}
+    </div>`;
+  }
+  const totalPower = planned.reduce((a, p) => a + p.power, 0) + sc.power;
+  html += `<div class="rsum">총 전력 (채굴 포함): <b>${fmt(totalPower)} MW</b> ·
+    <span class="hint">시간을 절반으로 줄이면 기계·전력이 대략 두 배 — 목표 시간을 바꿔 비교해 보세요</span></div>`;
+  box.innerHTML = html;
+  attachHandlers(box, planned);
+}
+
+function renderResult() {
+  const box = $('result');
+  const E = totalMine();
+  if (!state.target) { box.innerHTML = ''; return; }
+  if (state.target === state.res) { box.innerHTML = '<div class="rsum">목표가 캐는 자원 그 자체입니다 — 위의 벨트/파이프 추천을 그대로 쓰면 됩니다.</div>'; return; }
+
+  const unit = orePerUnit(state.target);
+  if (unit.ore <= 1e-12) {
+    box.innerHTML = `<div class="rsum">⚠ 현재 선택된 레시피 조합으로는 <b>${koOf(state.target)}</b> 생산에 <b>${koOf(state.res)}</b>이(가) 쓰이지 않습니다. 단계별 레시피를 바꿔 보세요.</div>`;
+    return;
+  }
+  const { totals, ext, bypro, reused, oreUsed, targetRate } = solveChain(E, unit.ore);
+
+  // 요약
+  let html = `<div class="rsum">채굴 <b>${fmt(E)}${unitOf(isLiq(state.res))}</b> (${koOf(state.res)}) 전부 투입 →
+    <b>${koOf(state.target)} ${fmt(targetRate)}${unitOf(isLiq(state.target))}</b> 생산.
+    아래 세팅이면 <b>어느 기계도 놀지 않습니다</b> (재료가 정확히 맞물림).`;
+  const plans = auxPlans(ext);
+  const planned = plans.filter(p => !p.unplanned);
+  if (planned.length) {
+    html += `<br>부수 원자재 (채굴 계획 포함): ` + planned.map(p =>
+      `<b>${koOf(p.id)} ${fmt(p.need)}${unitOf(p.liq)}</b> <span class="hint">(${p.name} ×${p.count}${p.shortage > 1e-6 ? ' · <span style="color:var(--bad)">부족!</span>' : ''})</span>`).join(' · ');
+  }
+  const unplanned = plans.filter(p => p.unplanned);
+  if (unplanned.length) {
+    html += `<br>별도 라인 필요: ` + unplanned.map(p =>
+      `<span class="ext">${koOf(p.id)} ${fmt(p.need)}${unitOf(isLiq(p.id))}</span>`).join(' · ');
+  }
+  const reList = Object.entries(reused).filter(([, v]) => v > 1e-6);
+  if (reList.length) {
+    html += `<br>♻ 부산물 재사용: ` + reList.map(([k, v]) =>
+      `<b>${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}</b>`).join(' · ') +
+      ` <span class="hint">— 부산물을 해당 라인 입력으로 되돌려 잇는 만큼 원자재·기계가 줄어 있습니다` +
+      (reList.some(([k]) => isLiq(k)) ? ' (액체 재순환은 재사용 파이프를 우선 접합으로)' : '') + `</span>`;
+  }
+  const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
+  if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ') +
+    ` <span class="hint">(싱크 소각 또는 저장)</span>`;
+  html += `</div>`;
+
+  html += `<div class="rsum" style="font-size:13px">🔀 <b>분배기 상식</b> — 일렬로 늘어세운 분배기(매니폴드)는
+    처음에 <b>앞쪽 기계만 재료를 받습니다</b>. 고장이 아니라, 기계 버퍼가 차면 남는 재료가 뒤로 흘러
+    몇 분 뒤 전원 100%로 맞춰집니다 (총 공급 = 총 소비이기만 하면 됨 — 아래 세팅이 그 상태).
+    기다리기 싫으면 각 단계의 <b>균형 트리</b> 구성을 쓰세요. 액체는 파이프 접합만으로 자연 균형입니다.</div>`;
+
+  // 채굴 배치도
+  html += `<div class="stage"><div class="head">${iconImg(state.res, 26)}<span class="t">채굴 · 추출</span>
+    <span class="rate">${fmt(oreUsed)}${unitOf(isLiq(state.res))} 사용</span></div>${mineDiagram()}</div>`;
+
+  html += auxCardsHtml(planned);
+
+  // 단계: 깊은 것(원자재 쪽)부터 (재사용으로 0이 된 라인은 제외)
+  const sc = stageCardsHtml(totals);
+  const stages = sc.stages, stageInfo = sc.stageInfo;
+  let totalPower = state.deps.reduce((s, d) => s + depPower(d), 0)
+    + planned.reduce((s, p) => s + p.power, 0) + sc.power;
+  html += sc.html;
+  // 🗺 전체 배치도 — 채굴부터 목표까지 한 장으로
+  if (stageInfo.length) {
+    html += `<div class="stage">
+      <div class="head"><span class="t">🗺 전체 배치도</span>
+        <span class="hint">위의 채굴·단계 배치도를 그대로 이어 붙인 전체 그림 — 단계 사이 연결선은 오른쪽 레인을 타고 내려갑니다.
+        점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span></span></div>
+      ${composedDiagram(stageInfo, reused, oreUsed, plans)}
+    </div>`;
+  }
+
+  // 🚚 수송 가이드 — 매장지가 멀 때: 단계별 벨트 부하(광석 대비)로 "어디까지 현지 가공할지" 판단
+  if (stages.length >= 1) {
+    let chips = `<span class="badge">${iconImg(state.res, 16)} ${koOf(state.res)} ${fmt(oreUsed)}${unitOf(isLiq(state.res))} <b>100%</b></span>`;
+    for (const [item, t] of stages) {
+      const pct = t.rate / oreUsed * 100;
+      chips += ` ▸ <span class="badge ${pct <= 50 ? 'good' : ''}">${iconImg(item, 16)} ${koOf(item)} ${fmt(t.rate)}${unitOf(isLiq(item))} <b>${fmt(pct)}%</b></span>`;
+    }
+    html += `<div class="rsum" style="font-size:13px">🚚 <b>수송 가이드</b> — 매장지가 멀면 전부 본진으로 끌고 오지 말고,
+      <b>부하(%)가 뚝 떨어지는 단계까지 매장지 옆에서 가공</b>한 뒤 그것만 나르세요.<br>
+      <div style="margin:6px 0; line-height:2.2">${chips}</div>
+      <span class="hint">%는 광석 벨트 대비 나를 양. 벨트·파이프는 아무리 길어도 손실이 없으니(건설비뿐) 초반엔 그냥 길게 잇는 게 정답이고,
+      주괴처럼 1:1인 단계는 현지 가공해도 수송 이득이 없습니다. 초록 배지(≤50%)부터 벨트 수가 절반 이하로 줄어듭니다.
+      현지 가공엔 전력이 필요하니 전력선을 같이 끌고 갈 것. 장거리 대량 수송은 트럭(티어 3)·기차(티어 6), 액체는 파이프 구간마다 펌프로 양정 확보.</span></div>`;
+  }
+  html += `<div class="rsum">총 전력 (채굴·추출 포함): <b>${fmt(totalPower)} MW</b></div>`;
+  box.innerHTML = html;
+  attachHandlers(box, planned);
+}
+
 function renderMineSummary() {
   const E = totalMine();
   const pw = state.deps.reduce((s, d) => s + depPower(d), 0);
@@ -902,16 +1002,37 @@ function update() {
   $('sel-res').value = state.res;
   $('sel-belt').value = state.maxBelt;
   $('sel-pipe').value = state.maxPipe;
+  $('sel-mission').value = state.mission ? String(state.mission.i) : '';
+  $('sel-mtime').value = state.mission ? String(state.mission.min) : '60';
   buildDepRows();
   buildQuickTable();
   renderMineSummary();
-  renderResult();
+  if (state.mission) renderMission(); else renderResult();
 }
 
 /* ---------- 초기화 ---------- */
 buildResSelect();
 $('sel-belt').innerHTML = BELTS.map(([mk, cap]) => `<option value="${mk}">~Mk.${mk} (${cap}/분)</option>`).join('');
 $('sel-pipe').innerHTML = PIPES.map(([mk, cap]) => `<option value="${mk}">~Mk.${mk} (${cap}㎥/분)</option>`).join('');
+(function initMission() {
+  const list = missionList();
+  const groups = {};
+  list.forEach((m, i) => {
+    const g = typeof m.tier === 'number' ? `티어 ${m.tier}` : '우주 엘리베이터';
+    (groups[g] = groups[g] || []).push(`<option value="${i}">${m.n}</option>`);
+  });
+  $('sel-mission').innerHTML = `<option value="">— 사용 안 함 —</option>` +
+    Object.entries(groups).map(([g, os]) => `<optgroup label="${g}">${os.join('')}</optgroup>`).join('');
+  $('sel-mtime').innerHTML = [15, 30, 60, 120, 240].map(m => `<option value="${m}">${m}분</option>`).join('');
+  $('sel-mission').addEventListener('change', () => {
+    state.mission = $('sel-mission').value === '' ? null : { i: +$('sel-mission').value, min: +$('sel-mtime').value || 60 };
+    update();
+  });
+  $('sel-mtime').addEventListener('change', () => {
+    if (state.mission) state.mission.min = +$('sel-mtime').value;
+    update();
+  });
+})();
 $('sel-belt').addEventListener('change', () => { state.maxBelt = +$('sel-belt').value; update(); });
 $('sel-pipe').addEventListener('change', () => { state.maxPipe = +$('sel-pipe').value; update(); });
 nameMap = buildDatalist();

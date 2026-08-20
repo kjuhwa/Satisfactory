@@ -49,6 +49,20 @@
     단계별 기계 대수·클럭·벨트를 계산합니다.</p>
   </section>
 
+  <section class="panel" id="p-mission">
+    <h2>3. 미션 모드 <span class="hint">(마일스톤 · 우주 엘리베이터 납품 공장)</span></h2>
+    <div class="row">
+      <label>임무
+        <select id="sel-mission"></select>
+      </label>
+      <label>목표 완료 시간
+        <select id="sel-mtime"></select>
+      </label>
+    </div>
+    <p class="hint">임무를 고르면 요구 물품 전부를 목표 시간 안에 동시에 만들어내는 공장을 통째로 설계합니다.
+    이때는 1번 패널의 매장지 대신 필요한 모든 원자재를 결과에서 직접 계획합니다 (엘리베이터 수치는 1.0 기준).</p>
+  </section>
+
   <section id="result"></section>
 </main>
 
@@ -57,7 +71,7 @@
   <a href="../">홈</a>
 </footer>
 
-<script src="../web/data.js"></script>
+<script src="../web/data.js?v=2"></script>
 <script src="app.js"></script>
 </body>
 </html>
