@@ -46,7 +46,8 @@ let state = {
   auxDeps: {},           // 부수 원자재 매장지 직접 구성 (item id -> [{purity, mk?}])
   mission: null,         // 미션 모드 {i: missionList 인덱스, min: 목표 분}
   gen: 'coal',           // 발전소 계획 방식 (none|coal|fuel|turbo|nuclear)
-  trainOn: {},           // 기차 수송 구간 (item id -> true: 이 품목의 출하를 기차로)
+  trainOn: {},           // (구) 기차 수송 — transMode로 이전됨
+  transMode: {},         // 수송 방식 (item id -> 'train' | 'drone', 없으면 벨트/파이프)
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
@@ -65,6 +66,8 @@ state.auxPurity = state.auxPurity || {};
 state.auxDeps = state.auxDeps || {};
 state.gen = state.gen || 'coal';
 state.trainOn = state.trainOn || {};
+state.transMode = state.transMode || {};
+for (const k in state.trainOn) if (state.trainOn[k] && !state.transMode[k]) state.transMode[k] = 'train';
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
@@ -354,12 +357,48 @@ function trainInfo(item, rate) {
   const cars = Math.max(1, Math.ceil(rate * TRAIN_RT / cap - 1e-9));
   return { liq, cap, cars };
 }
+/* 수송 방식 선택 셀렉트 + 팁 (벨트/기차/드론) */
+function transSelect(item) {
+  const cur = state.transMode[item] || '';
+  return `<label style="flex-direction:row;align-items:center;gap:6px">수송
+    <select data-trans="${item}">
+      <option value="" ${cur === '' ? 'selected' : ''}>${isLiq(item) ? '파이프' : '벨트'}</option>
+      <option value="train" ${cur === 'train' ? 'selected' : ''}>🚆 기차</option>
+      <option value="drone" ${cur === 'drone' ? 'selected' : ''}>🛸 드론</option>
+    </select></label>`;
+}
+function transTip(item, rate) {
+  const m = state.transMode[item];
+  if (m === 'train') return trainTip(item, rate);
+  if (m === 'drone') return droneTip(item, rate);
+  return '';
+}
+
 function trainTip(item, rate) {
   const t = trainInfo(item, rate);
   return `<div class="tip">🚆 <b>기차 수송</b> — 출력을 화물역에 적재해 소비지 역으로 운송.
     ${t.liq ? `유체 화물칸 1칸 = 1,600㎥` : `화물칸 1칸 = 32칸 × 스택 ${(D.items[item] && D.items[item].st) || 100} = ${fmt(t.cap)}개`}
     → 왕복 ${TRAIN_RT}분 가정 시 <b>화물칸 ${t.cars}칸</b> 편성이면 ${fmt(rate)}${unitOf(t.liq)}을 소화합니다
     (거리가 멀어 왕복이 길어지면 화물칸·열차를 비례해 추가, 양방향 역은 복선+신호 필수)</div>`;
+}
+
+/* ---------- 드론 수송 (티어 8) ----------
+ * 드론 1대 적재 = 9칸 × 스택 크기. 액체는 포장 없이는 불가. 왕복 4분 가정, 배터리 연료. */
+const DRONE_RT = 4;
+function droneInfo(item, rate) {
+  const st = (D.items[item] && D.items[item].st) || 100;
+  const cap = 9 * st;
+  const drones = Math.max(1, Math.ceil(rate * DRONE_RT / cap - 1e-9));
+  return { cap, drones, st };
+}
+function droneTip(item, rate) {
+  if (isLiq(item)) return `<div class="tip" style="color:var(--warn)">🛸 액체는 드론으로 못 나릅니다 — 포장기로 포장하거나 기차(유체 화물칸)·파이프를 쓰세요</div>`;
+  const d = droneInfo(item, rate);
+  let html = `<div class="tip">🛸 <b>드론 수송</b> — 양끝에 드론 정류장(티어 8), 연료는 배터리.
+    드론 1대 적재 = 9칸 × 스택 ${d.st} = ${fmt(d.cap)}개 → 왕복 ${DRONE_RT}분 가정 시 <b>드론 ${d.drones}대</b>면 ${fmt(rate)}/분 소화.
+    거리와 무관하게 직선으로 날아 고저차·협곡에 최강이지만 배터리 라인이 필요합니다</div>`;
+  if (d.drones > 5) html += `<div class="tip" style="color:var(--warn)">🛸 드론 ${d.drones}대는 과합니다 — 이 유량이면 기차·벨트가 낫고, 드론은 소량 고가치 품목용입니다</div>`;
+  return html;
 }
 
 /* 추출기들을 벨트/파이프 한 줄 용량 이하로 순서대로 묶는다 (그룹별 독립 줄) */
@@ -697,10 +736,23 @@ function composedDiagram(stageInfo, reused, oreUsed, plans, includeMain = true) 
     const ix = c.port.x, iy = c.dst.y0 + c.port.y;
     const lx = laneX(lanes.get(c.src.key));
     const gy = c.dst.y0 - 12 - (c.dst.core.inPorts.indexOf(c.port)) * 8;   // 소비 섹션 위 빈틈에서 가로 이동
-    const byTrain = !c.recycle && !!state.trainOn[c.src.item];
-    const col = c.recycle ? '#6fd68a' : (byTrain ? '#c8cfe0' : (c.port.liq ? BP.pipe : BP.belt));
-    const dash = c.recycle ? 'stroke-dasharray="3 4"' : (byTrain ? '' : (c.port.liq ? '' : 'stroke-dasharray="7 5"'));
-    const width = byTrain ? 4.5 : (c.port.liq && !c.recycle ? 4 : 2.5);
+    const mode = !c.recycle ? state.transMode[c.src.item] : null;
+    const byTrain = mode === 'train';
+    const byDrone = mode === 'drone' && !c.port.liq;
+    const col = c.recycle ? '#6fd68a' : (byTrain ? '#c8cfe0' : (byDrone ? '#d8b8f0' : (c.port.liq ? BP.pipe : BP.belt)));
+    const dash = c.recycle ? 'stroke-dasharray="3 4"' : (byTrain ? '' : (byDrone ? 'stroke-dasharray="2 6"' : (c.port.liq ? '' : 'stroke-dasharray="7 5"')));
+    const width = byTrain ? 4.5 : (byDrone ? 2.5 : (c.port.liq && !c.recycle ? 4 : 2.5));
+    if (byDrone) {
+      // 드론은 지형 무시 직선 비행 — 베지어 곡선 항로
+      const mx2 = (ox + ix) / 2, my2 = Math.min(oy, iy) - 40;
+      wires += `<path d="M ${ox} ${oy} Q ${mx2} ${my2}, ${ix} ${iy}" fill="none" stroke="${col}" stroke-width="2.5" stroke-dasharray="2 6" opacity=".95"/>`;
+      wires += `<polygon points="${ix - 8},${iy - 4} ${ix},${iy} ${ix - 8},${iy + 4}" fill="${col}"/>`;
+      wires += `<circle cx="${ox}" cy="${oy}" r="7" fill="#3d3350" stroke="${col}"/><text x="${ox}" y="${oy + 3.5}" text-anchor="middle" font-size="9">🛸</text>`;
+      wires += `<circle cx="${ix - 14}" cy="${iy}" r="7" fill="#3d3350" stroke="${col}"/><text x="${ix - 14}" y="${iy + 3.5}" text-anchor="middle" font-size="9">🛸</text>`;
+      const di = droneInfo(c.src.item, c.rate || 0);
+      wires += `<text x="${mx2}" y="${my2 + 14}" text-anchor="middle" font-size="9.5" font-weight="700" fill="${col}" paint-order="stroke" stroke="#1b1813" stroke-width="3">🛸 ${c.label} · 드론 ${di.drones}대</text>`;
+      continue;
+    }
     wires += `<path d="M ${ox} ${oy} H ${lx} V ${gy} H ${ix - 10} V ${iy} H ${ix}" fill="none" stroke="${col}" stroke-width="${width}" ${dash} opacity=".9"/>`;
     if (byTrain) {
       // 철로 침목 무늬 + 양끝 화물역
@@ -900,8 +952,8 @@ function auxCardsHtml(planned) {
         ${flowBadge(pl.need - pl.shortage, pl.liq)}
         <span class="badge">⚡ ${fmt(pl.power)} MW</span>
         ${!pl.manual ? `<button class="ghost mini" data-auxman="${pl.id}">매장지 직접 구성 (여러 개)</button>` : ''}
-        <button class="ghost mini" data-train="${pl.id}">${state.trainOn[pl.id] ? '↩ 벨트 수송으로' : '🚆 기차로 수송'}</button></div>
-      ${state.trainOn[pl.id] ? trainTip(pl.id, pl.need - pl.shortage) : ''}
+        ${transSelect(pl.id)}</div>
+      ${transTip(pl.id, pl.need - pl.shortage)}
       ${worldWarn(pl)}
       ${pl.shortage > 1e-6 ? `<div class="tip" style="color:var(--bad)">⚠ <b>${fmt(pl.shortage)}${unitOf(pl.liq)} 부족</b> — 매장지를 추가하거나 순도·채굴기를 올리세요. 부족한 만큼 이 재료를 쓰는 라인 전체가 감속합니다.</div>` : ''}
     </div>`;
@@ -979,8 +1031,8 @@ function stageCardsHtml(totals) {
         ${flowBadge(t.rate, isLiq(item))}
         <span class="badge">⚡ ${fmt(ml.power)} MW</span>
         ${ml.count > 1 ? `<button class="ghost mini" data-nomerge="${item}">${state.noMerge[item] ? '↩ 한 줄로 모으기' : '합류기 생략 보기'}</button>` : ''}
-        <button class="ghost mini" data-train="${item}">${state.trainOn[item] ? '↩ 벨트 수송으로' : '🚆 기차로 수송'}</button></div>
-      ${state.trainOn[item] ? trainTip(item, t.rate) : ''}
+        ${transSelect(item)}</div>
+      ${transTip(item, t.rate)}
       ${distGuide(item, ml, t.rate)}
       ${bpTip(ml)}
       ${altSuggest(item)}
@@ -1041,9 +1093,10 @@ function attachHandlers(box, planned) {
   }));
   const gs = box.querySelector('#sel-gen');
   if (gs) gs.addEventListener('change', () => { state.gen = gs.value; update(); });
-  box.querySelectorAll('button[data-train]').forEach(b => b.addEventListener('click', () => {
-    const it = b.dataset.train;
-    state.trainOn[it] = !state.trainOn[it];
+  box.querySelectorAll('select[data-trans]').forEach(sl => sl.addEventListener('change', () => {
+    const it = sl.dataset.trans;
+    if (sl.value) state.transMode[it] = sl.value; else delete state.transMode[it];
+    state.trainOn[it] = sl.value === 'train';   // 구버전 호환
     update();
   }));
   const st = box.querySelector('button[data-suggest-time]');
@@ -1263,7 +1316,7 @@ function renderMission() {
   if (sc.stageInfo.length) {
     html += `<div class="stage">
       <div class="head"><span class="t">🗺 전체 배치도</span>
-        <span class="hint">원자재 채굴부터 미션 물품까지 — 점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 기차 지정은 각 카드의 🚆 버튼</span></div>
+        <span class="hint">원자재 채굴부터 미션 물품까지 — 점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#d8b8f0">보라 점선 곡선+🛸=드론</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 수송 방식은 각 카드에서 선택</span></div>
       ${composedDiagram(sc.stageInfo, reused, 0, plans, false)}
     </div>`;
   }
@@ -1348,7 +1401,7 @@ function renderResult() {
     html += `<div class="stage">
       <div class="head"><span class="t">🗺 전체 배치도</span>
         <span class="hint">위의 채굴·단계 배치도를 그대로 이어 붙인 전체 그림 — 단계 사이 연결선은 오른쪽 레인을 타고 내려갑니다.
-        점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 기차 지정은 각 카드의 🚆 버튼</span></div>
+        점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#d8b8f0">보라 점선 곡선+🛸=드론</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 수송 방식은 각 카드에서 선택</span></div>
       ${composedDiagram(stageInfo, reused, oreUsed, plans)}
     </div>`;
   }
