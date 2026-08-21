@@ -48,6 +48,8 @@ let state = {
   gen: 'coal',           // 발전소 계획 방식 (none|coal|fuel|turbo|nuclear)
   trainOn: {},           // (구) 기차 수송 — transMode로 이전됨
   transMode: {},         // 수송 방식 (item id -> 'train' | 'drone', 없으면 벨트/파이프)
+  sloop: {},             // 솜머슬룹 증폭 (item id -> true: 그 단계 기계 만충)
+  apa: 'none',           // 외계 전력 증폭기 (none|plain|fueled)
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
@@ -68,6 +70,8 @@ state.gen = state.gen || 'coal';
 state.trainOn = state.trainOn || {};
 state.transMode = state.transMode || {};
 for (const k in state.trainOn) if (state.trainOn[k] && !state.transMode[k]) state.transMode[k] = 'train';
+state.sloop = state.sloop || {};
+state.apa = state.apa || 'none';
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
@@ -174,7 +178,7 @@ function orePerUnit(item, visiting = new Set()) {
   if (item === state.res) return { ore: 1, ext: {} };
   if (isRaw(item) || !byOut[item] || visiting.has(item)) return { ore: 0, ext: { [item]: 1 } };
   const r = recipeOf(item);
-  const outQty = r.out.find(o => o[0] === item)[1];
+  const outQty = r.out.find(o => o[0] === item)[1] * ampOf(item);   // 슬룹 증폭: 입력당 산출 ×2
   visiting.add(item);
   const acc = { ore: 0, ext: {} };
   for (const [ing, q] of r.in) {
@@ -209,9 +213,10 @@ function buildChain(targets, credits, mainRes) {
     t.depth = Math.max(t.depth, depth);
     const r = recipeOf(item);
     const outQty = r.out.find(o => o[0] === item)[1];
+    const ampQ = outQty * ampOf(item);   // 슬룹: 입력·부산물 계산의 분모만 ×2 (부산물도 같이 증폭되므로 비율 유지)
     for (const [o, q] of r.out) if (o !== item) bypro[o] = (bypro[o] || 0) + rate / outQty * q;
     visiting.add(item);
-    for (const [ing, q] of r.in) walk(ing, rate * q / outQty, depth + 1, visiting);
+    for (const [ing, q] of r.in) walk(ing, rate * q / ampQ, depth + 1, visiting);
     visiting.delete(item);
   };
   for (const tg of targets) walk(tg.item, tg.rate, 0, new Set());
@@ -573,6 +578,8 @@ function stageDiagramCore(item, ml, rate) {
 function auxBaseInfo(id) {
   if (id === 'Desc_Water_C') return { base: 120, pwr: 20, icon: 'Desc_WaterPump_C', name: '양수기', hasPu: false };
   if (id === 'Desc_LiquidOil_C') return { base: 120, pwr: 40, icon: 'Desc_OilPump_C', name: '원유 추출기', hasPu: true };
+  // 자원 우물: 위성 노드 단위 계획. 가압기(150MW)가 우물당 1대 — 전력은 위성당 ~25MW 근사
+  if (id === 'Desc_NitrogenGas_C') return { base: 60, pwr: 25, icon: 'Desc_NitrogenGas_C', name: '우물 위성', hasPu: true };
   return null;   // null = 고체 (채굴기 Mk 선택 가능)
 }
 function auxRowSpec(id, row) {
@@ -590,7 +597,7 @@ function auxPlans(ext, autoOnly) {
   const plans = [];
   for (const [id, need] of Object.entries(ext)) {
     if (need <= 1e-6) continue;
-    if (!isRaw(id) || id === 'Desc_NitrogenGas_C') { plans.push({ id, need, unplanned: true }); continue; }
+    if (!isRaw(id)) { plans.push({ id, need, unplanned: true }); continue; }
     const liq = isLiq(id);
     const cap = maxCap(liq);
     const manualRows = autoOnly ? null : state.auxDeps[id];
@@ -868,11 +875,12 @@ let nameMap = new Map();
 function machineLine(item, rate) {
   const r = recipeOf(item);
   const outQty = r.out.find(o => o[0] === item)[1];
-  const per = 60 / r.time * outQty;
+  const amp = ampOf(item);
+  const per = 60 / r.time * outQty * amp;
   const count = Math.ceil(rate / per - 1e-9);
   const clock = rate / (count * per) * 100;
   const m = D.machines[r.machine] || { ko: r.machine, power: 0 };
-  const power = m.power * count * Math.pow(clock / 100, EXP);
+  const power = m.power * count * Math.pow(clock / 100, EXP) * amp * amp;   // 슬룹 만충 = 전력 ×4
   // 조각으로 대수 줄이기 대안 (기계 출력 포트도 하나 — 한 대 출력이 벨트 한도를 넘지 않게)
   let minCount = Math.ceil(rate / (per * 2.5) - 1e-9);
   minCount = Math.max(minCount, Math.ceil(rate / maxCap(isLiq(item)) - 1e-9));
@@ -884,7 +892,9 @@ function machineLine(item, rate) {
       — 단, <b>조각은 채굴기·시추기부터</b> 쓰는 게 정석입니다. 생산 기계는 증설이 보통 더 쌉니다</div>`;
   }
   const exact = Math.abs(clock - 100) < 0.05;
-  return { r, per, count, clock, power, m, alt, exact };
+  const sloopSlots = SLOOP_SLOTS[r.machine] || 0;
+  const sloops = amp > 1 ? count * sloopSlots : 0;
+  return { r, per, count, clock, power, m, alt, exact, amp, sloopSlots, sloops };
 }
 
 /* ---------- 지도 자원 한계 (1.0 실측: 매장지 수 임순/보통/순수) ----------
@@ -897,11 +907,25 @@ const WORLD_NODES = {
   Desc_Sulfur_C: [6, 5, 5], Desc_OreBauxite_C: [5, 6, 6], Desc_OreUranium_C: [3, 2, 0],
   Desc_SAM_C: [10, 6, 3], Desc_LiquidOil_C: [10, 12, 8],
 };
+const WORLD_WELLS = {   // 자원 우물 위성 노드 수 (임순/보통/순수) — 위성 250% = 75/150/300
+  Desc_LiquidOil_C: [8, 6, 4], Desc_NitrogenGas_C: [2, 7, 36],
+};
 function worldMaxOf(id) {
   const w = WORLD_NODES[id];
-  if (!w) return null;
-  const per = id === 'Desc_LiquidOil_C' ? [150, 300, 600] : [300, 600, 1200];
-  return { nodes: w[0] + w[1] + w[2], max: w[0] * per[0] + w[1] * per[1] + w[2] * per[2] };
+  const wl = WORLD_WELLS[id];
+  if (!w && !wl) return null;
+  let nodes = 0, max = 0;
+  if (w) {
+    const per = id === 'Desc_LiquidOil_C' ? [150, 300, 600] : [300, 600, 1200];
+    nodes += w[0] + w[1] + w[2];
+    max += w[0] * per[0] + w[1] * per[1] + w[2] * per[2];
+  }
+  if (wl) {
+    const per = [75, 150, 300];
+    nodes += wl[0] + wl[1] + wl[2];
+    max += wl[0] * per[0] + wl[1] * per[1] + wl[2] * per[2];
+  }
+  return { nodes, max };
 }
 function worldWarn(pl) {
   let html = '';
@@ -954,6 +978,7 @@ function auxCardsHtml(planned) {
         ${!pl.manual ? `<button class="ghost mini" data-auxman="${pl.id}">매장지 직접 구성 (여러 개)</button>` : ''}
         ${transSelect(pl.id)}</div>
       ${transTip(pl.id, pl.need - pl.shortage)}
+      ${pl.id === 'Desc_NitrogenGas_C' ? `<div class="tip">💨 자원 우물 방식: 우물마다 <b>가압기 1대(150MW)</b>가 위성 노드 전체를 가동합니다 — 위성 노드에는 추출기를 따로 짓지 않으며, 전력은 위성당 ~25MW로 근사했습니다. 질소 우물은 지도에 6곳(위성 45개)</div>` : ''}
       ${worldWarn(pl)}
       ${pl.shortage > 1e-6 ? `<div class="tip" style="color:var(--bad)">⚠ <b>${fmt(pl.shortage)}${unitOf(pl.liq)} 부족</b> — 매장지를 추가하거나 순도·채굴기를 올리세요. 부족한 만큼 이 재료를 쓰는 라인 전체가 감속합니다.</div>` : ''}
     </div>`;
@@ -968,6 +993,19 @@ const FOOTPRINT = {
   Desc_Packager_C: [8, 8], Desc_Blender_C: [18, 16], Desc_Converter_C: [16, 20],
   Desc_QuantumEncoder_C: [24, 36], Desc_HadronCollider_C: [24, 38],
 };
+/* 솜머슬룹 슬롯 수 (1.0 실측): 만충 시 입력 그대로 출력 ×2, 전력 ×4. 세계 총량 106개 */
+const SLOOP_SLOTS = {
+  Desc_SmelterMk1_C: 1, Desc_ConstructorMk1_C: 1, Desc_FoundryMk1_C: 2,
+  Desc_AssemblerMk1_C: 2, Desc_OilRefinery_C: 2, Desc_Converter_C: 2,
+  Desc_ManufacturerMk1_C: 4, Desc_Blender_C: 4, Desc_HadronCollider_C: 4,
+  Desc_QuantumEncoder_C: 4,
+};
+const SLOOP_WORLD = 106;
+const ampOf = item => {
+  const r = recipeOf(item);
+  return (state.sloop[item] && r && SLOOP_SLOTS[r.machine]) ? 2 : 1;
+};
+
 const BP_SIZES = [[1, 32, '티어4'], [2, 40, '티어6'], [3, 48, '티어8']];
 function bpTip(ml) {
   if (ml.count <= 1) return '';
@@ -1028,10 +1066,13 @@ function stageCardsHtml(totals) {
       ${stageDiagram(item, ml, t.rate)}
       <div class="mach">
         <span class="badge ${ml.exact ? 'good' : ''}">${ml.count}대 × ${fmt(ml.clock)}%${ml.exact ? ' 딱 맞음 ✨' : ''}</span>
+        ${ml.amp > 1 ? `<span class="badge" style="color:#c9a0ff;border-color:#4a3a6a">🌀 슬룹 ${ml.sloops}개 · 출력×2 · 전력×4</span>` : ''}
         ${flowBadge(t.rate, isLiq(item))}
         <span class="badge">⚡ ${fmt(ml.power)} MW</span>
         ${ml.count > 1 ? `<button class="ghost mini" data-nomerge="${item}">${state.noMerge[item] ? '↩ 한 줄로 모으기' : '합류기 생략 보기'}</button>` : ''}
-        ${transSelect(item)}</div>
+        ${transSelect(item)}
+        ${ml.sloopSlots ? `<button class="ghost mini" data-sloop="${item}">${state.sloop[item] ? '↩ 슬룹 해제' : '🌀 슬룹 증폭'}</button>` : ''}</div>
+      ${ml.amp > 1 ? `<div class="tip" style="color:#c9a0ff">🌀 <b>슬룹 증폭</b> — 기계당 슬룹 ${ml.sloopSlots}개 만충: 입력은 그대로 출력 ×2 → 이 단계 위쪽 원자재·기계가 절반이 됐습니다. 대가는 전력 ×4. 슬룹은 세계에 ${SLOOP_WORLD}개뿐이니 희소 자원 절약이 큰 단계에 쓰세요</div>` : ''}
       ${transTip(item, t.rate)}
       ${distGuide(item, ml, t.rate)}
       ${bpTip(ml)}
@@ -1039,7 +1080,8 @@ function stageCardsHtml(totals) {
       ${ml.alt}
     </div>`;
   }
-  return { html, stages, stageInfo, power };
+  const sloops = stageInfo.reduce((a, x) => a + (x.ml.sloops || 0), 0);
+  return { html, stages, stageInfo, power, sloops };
 }
 
 /* 결과 영역 공용 이벤트 배선 (레시피/합류기/부수 매장지) */
@@ -1093,6 +1135,13 @@ function attachHandlers(box, planned) {
   }));
   const gs = box.querySelector('#sel-gen');
   if (gs) gs.addEventListener('change', () => { state.gen = gs.value; update(); });
+  const asel = box.querySelector('#sel-apa');
+  if (asel) asel.addEventListener('change', () => { state.apa = asel.value; update(); });
+  box.querySelectorAll('button[data-sloop]').forEach(b => b.addEventListener('click', () => {
+    const it = b.dataset.sloop;
+    state.sloop[it] = !state.sloop[it];
+    update();
+  }));
   box.querySelectorAll('select[data-trans]').forEach(sl => sl.addEventListener('change', () => {
     const it = sl.dataset.trans;
     if (sl.value) state.transMode[it] = sl.value; else delete state.transMode[it];
@@ -1115,13 +1164,19 @@ const GENS = {
   turbo: { name: '연료 발전기 · 터보 연료', icon: 'Desc_GeneratorFuel_C', mw: 250, fuels: [['Desc_LiquidTurboFuel_C', 7.5]], water: 0 },
   nuclear: { name: '원자력 발전소', icon: 'Desc_GeneratorNuclear_C', mw: 2500, fuels: [['Desc_NuclearFuelRod_C', 0.2]], water: 240 },
 };
+const APA = {
+  none: { flat: 0, boost: 0 },
+  plain: { flat: 500, boost: 0.10 },
+  fueled: { flat: 500, boost: 0.30 },
+};
 function powerPlan(factoryPower) {
   const g = GENS[state.gen];
   if (!g || factoryPower <= 0) return null;
+  const ap = APA[state.apa] || APA.none;
   let extra = 0, out = null;
   for (let it = 0; it < 6; it++) {
     const need = factoryPower + extra;
-    const n = Math.ceil(need / g.mw - 1e-9);
+    const n = Math.max(0, Math.ceil((need - ap.flat) / (g.mw * (1 + ap.boost)) - 1e-9));
     const extNeed = {};
     const targets = [];
     for (const [fid, per] of g.fuels) {
@@ -1144,7 +1199,7 @@ function powerPlan(factoryPower) {
     }
     const plans = auxPlans(extNeed, true).filter(pl => !pl.unplanned);
     const exPower = plans.reduce((a, pl) => a + pl.power, 0);
-    out = { g, n, need, gross: n * g.mw, chainStages, plans, chainPower, exPower, bypro: chain ? chain.bypro : {} };
+    out = { g, n, need, gross: n * g.mw * (1 + ap.boost) + ap.flat, ap, apaSloops: state.apa !== 'none' ? 10 : 0, chainStages, plans, chainPower, exPower, bypro: chain ? chain.bypro : {} };
     const newExtra = chainPower + exPower;
     if (Math.abs(newExtra - extra) < 0.5) break;
     extra = newExtra;
@@ -1159,12 +1214,19 @@ function powerPlanHtml(factoryPower) {
       <option value="fuel" ${state.gen === 'fuel' ? 'selected' : ''}>연료 (250MW)</option>
       <option value="turbo" ${state.gen === 'turbo' ? 'selected' : ''}>터보 연료 (250MW)</option>
       <option value="nuclear" ${state.gen === 'nuclear' ? 'selected' : ''}>원자력 (2,500MW)</option>
+    </select></label>
+    <label style="flex-direction:row;align-items:center;gap:6px">👽 증폭기
+    <select id="sel-apa">
+      <option value="none" ${state.apa === 'none' ? 'selected' : ''}>없음</option>
+      <option value="plain" ${state.apa === 'plain' ? 'selected' : ''}>무연료 (+500MW·+10%)</option>
+      <option value="fueled" ${state.apa === 'fueled' ? 'selected' : ''}>연료 (+500MW·+30%)</option>
     </select></label>`;
   const pp = powerPlan(factoryPower);
   let body = '';
   if (pp) {
     body = `<div class="mach">${iconImg(pp.g.icon, 26)}
       <span class="badge good">${pp.g.name} <b>×${pp.n}</b></span>
+      ${state.apa !== 'none' ? `<span class="badge" style="color:#c9a0ff;border-color:#4a3a6a">👽 증폭기 +500MW · 발전 +${state.apa === 'fueled' ? 30 : 10}% · 🌀 슬룹 10개${state.apa === 'fueled' ? ' · 연료: 외계 전력 매트릭스 별도' : ''}</span>` : ''}
       <span class="badge">발전 ${fmt(pp.gross)} MW ≥ 필요 ${fmt(pp.need)} MW</span>
       <span class="badge">공장 ${fmt(factoryPower)} + 연료라인 ${fmt(pp.chainPower + pp.exPower)} MW</span></div>`;
     if (pp.plans.length) {
@@ -1322,7 +1384,8 @@ function renderMission() {
   }
   const totalPower = planned.reduce((a, p) => a + p.power, 0) + sc.power;
   const storN = Math.max(1, Math.ceil(totalPower * 0.2 / 100));
-  html += `<div class="rsum">총 전력 (채굴 포함): <b>${fmt(totalPower)} MW</b> ·
+  const sloopTotal = sc.sloops + (state.gen !== 'none' && state.apa !== 'none' ? 10 : 0);
+  html += `<div class="rsum">총 전력 (채굴 포함): <b>${fmt(totalPower)} MW</b>${sloopTotal > 0 ? ` · <span style="color:#c9a0ff">🌀 슬룹 ${sloopTotal}/${SLOOP_WORLD}${sloopTotal > SLOOP_WORLD ? ' <b style="color:var(--bad)">초과!</b>' : ''}</span>` : ''} ·
     <span class="hint">시간을 절반으로 줄이면 기계·전력이 대략 두 배 — 목표 시간을 바꿔 비교해 보세요.
     ⚡ 안정화: 전력 저장고 <b>${storN}개</b>(피크 여유 20%) + 구역별 전력 스위치 권장</span></div>`;
   html += powerPlanHtml(totalPower);
@@ -1363,7 +1426,7 @@ function renderResult() {
     html += `<br>♻ 부산물 재사용: ` + reList.map(([k, v]) =>
       `<b>${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}</b>`).join(' · ') +
       ` <span class="hint">— 부산물을 해당 라인 입력으로 되돌려 잇는 만큼 원자재·기계가 줄어 있습니다` +
-      (reList.some(([k]) => isLiq(k)) ? ' (액체 재순환은 재사용 파이프를 우선 접합으로)' : '') + `</span>`;
+      (reList.some(([k]) => isLiq(k)) ? ' (재순환 합류는 1.1 우선순위 합류기로 재사용 쪽을 높게, 액체는 우선 접합으로)' : '') + `</span>`;
   }
   const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
   if (bpList.length) {
@@ -1382,7 +1445,8 @@ function renderResult() {
   html += `<div class="rsum" style="font-size:13px">🔀 <b>분배기 상식</b> — 일렬로 늘어세운 분배기(매니폴드)는
     처음에 <b>앞쪽 기계만 재료를 받습니다</b>. 고장이 아니라, 기계 버퍼가 차면 남는 재료가 뒤로 흘러
     몇 분 뒤 전원 100%로 맞춰집니다 (총 공급 = 총 소비이기만 하면 됨 — 아래 세팅이 그 상태).
-    기다리기 싫으면 각 단계의 <b>균형 트리</b> 구성을 쓰세요. 액체는 파이프 접합만으로 자연 균형입니다.</div>`;
+    기다리기 싫으면 각 단계의 <b>균형 트리</b> 구성을 쓰세요. 액체는 파이프 접합만으로 자연 균형입니다.
+    <span class="hint">1.1 팁: <b>수직 분배기</b>로 다층 분배, <b>우선순위 합류기</b>로 합류 순서 제어(재순환 라인에 정답), <b>처리량 모니터</b>로 벨트 유량 실측.</span></div>`;
 
   // 채굴 배치도
   html += `<div class="stage"><div class="head">${iconImg(state.res, 26)}<span class="t">채굴 · 추출</span>
@@ -1421,7 +1485,9 @@ function renderResult() {
       현지 가공엔 전력이 필요하니 전력선을 같이 끌고 갈 것. 장거리 대량 수송은 트럭(티어 3)·기차(티어 6), 액체는 파이프 구간마다 펌프로 양정 확보.</span></div>`;
   }
   const storN = Math.max(1, Math.ceil(totalPower * 0.2 / 100));
+  const sloopTotal = sc.sloops + (state.gen !== 'none' && state.apa !== 'none' ? 10 : 0);
   html += `<div class="rsum">총 전력 (채굴·추출 포함): <b>${fmt(totalPower)} MW</b>
+    ${sloopTotal > 0 ? `· <span style="color:#c9a0ff">🌀 슬룹 사용 <b>${sloopTotal}</b>/${SLOOP_WORLD}${sloopTotal > SLOOP_WORLD ? ' <b style="color:var(--bad)">— 세계 총량 초과!</b>' : ''}</span>` : ''}
     <span class="hint">· ⚡ 안정화: 전력 저장고 <b>${storN}개</b>(피크 여유 20%, 1개=100MWh) + 구역별 전력 스위치 권장 — 순간 과부하로 퓨즈가 내려가는 걸 막아줍니다</span></div>`;
   html += powerPlanHtml(totalPower);
   box.innerHTML = html;
