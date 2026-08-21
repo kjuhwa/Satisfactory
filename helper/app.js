@@ -343,16 +343,35 @@ function mineDiagram() {
   const c = mineDiagramCore();
   return `<div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>`;
 }
+/* 추출기들을 벨트/파이프 한 줄 용량 이하로 순서대로 묶는다 (그룹별 독립 줄) */
+function packGroups(rates, cap) {
+  const groups = [];
+  let cur = [], sum = 0;
+  rates.forEach((r, i) => {
+    if (cur.length && sum + r > cap + 1e-9) { groups.push(cur); cur = []; sum = 0; }
+    cur.push(i); sum += r;
+  });
+  if (cur.length) groups.push(cur);
+  return groups;
+}
+
 function mineDiagramCore() {
   const deps = state.deps;
   const liq = isLiq(state.res);
   const N = deps.length;
-  const cell = 96, x0 = 20;
-  const W = Math.max(x0 + N * cell + 250, 560), H = 148;
-  const mergeY = 112;
+  const rates = deps.map(depRate);
+  const cap = maxCap(liq);
+  const groups = packGroups(rates, cap);         // 그룹 합이 벨트/파이프 한 줄 이하가 되게
+  const G = groups.length;
+  const gIdxOf = [];
+  groups.forEach((g, gi) => g.forEach(i => gIdxOf[i] = gi));
+  const GAPX = G > 1 ? 30 : 0;
+  const cell = 96, x0 = 20, mergeY = 112, H = 148;
+  const xc = i => x0 + i * cell + cell / 2 + gIdxOf[i] * GAPX;
+  const W = Math.max(xc(N - 1) + cell / 2 + 250, 560);
   let s = '', taps = '';
   deps.forEach((d, i) => {
-    const cx = x0 + i * cell + cell / 2;
+    const cx = xc(i);
     const m = depMachine(d);
     s += svgIcon(m.icon, cx - 22, 8, 44);
     s += svgIcon(state.res, cx + 12, 34, 18);
@@ -360,19 +379,26 @@ function mineDiagramCore() {
     s += `<text x="${cx}" y="66" text-anchor="middle" font-size="10" fill="${BP.text}">${pu}${m.name}${d.clock !== 100 ? ' ' + fmt(d.clock) + '%' : ''}</text>`;
     s += `<text x="${cx}" y="80" text-anchor="middle" font-size="11" font-weight="700" fill="${BP.bright}">${fmt(depRate(d))}${unitOf(liq)}</text>`;
     s += `<line x1="${cx}" y1="84" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="2"/>`;
-    if (N > 1 && i > 0) taps += tapIcon(liq, 'merge', cx, mergeY);  // 첫 대는 라인 시작점(직결)
   });
-  const lineX1 = x0 + cell / 2, lineX2 = x0 + (N - 1) * cell + cell / 2;
   const col = liq ? BP.pipe : BP.belt;
   const E = totalMine();
-  const f = flowFor(E, liq);
-  s += `<line x1="${lineX1}" y1="${mergeY}" x2="${lineX2 + 40}" y2="${mergeY}" stroke="${col}" stroke-width="${liq ? 5 : 3}" ${liq ? '' : 'stroke-dasharray="7 4"'}/>`;
-  s += `<line x1="${lineX2 + 40}" y1="${mergeY}" x2="${W - 190}" y2="${mergeY}" stroke="${col}" stroke-width="${liq ? 5 : 3}" ${liq ? '' : 'stroke-dasharray="7 4"'}/>`;
-  s += `<polygon points="${W - 190},${mergeY - 5} ${W - 180},${mergeY} ${W - 190},${mergeY + 5}" fill="${col}"/>`;
+  // 그룹마다 독립된 벨트 줄 (각 줄은 한 줄 한계 이하)
+  groups.forEach(g => {
+    const a = g[0], b = g[g.length - 1];
+    const gSum = g.reduce((t, i) => t + rates[i], 0);
+    const segX2 = xc(b) + 34;
+    s += `<line x1="${xc(a)}" y1="${mergeY}" x2="${segX2}" y2="${mergeY}" stroke="${col}" stroke-width="${liq ? 5 : 3}" ${liq ? '' : 'stroke-dasharray="7 4"'}/>`;
+    s += `<polygon points="${segX2},${mergeY - 5} ${segX2 + 9},${mergeY} ${segX2},${mergeY + 5}" fill="${col}"/>`;
+    if (G > 1) s += `<text x="${(xc(a) + segX2) / 2}" y="${mergeY + 14}" text-anchor="middle" font-size="9" fill="${BP.text}">${fmt(gSum)}${unitOf(liq)}</text>`;
+    for (let k = 1; k < g.length; k++) taps += tapIcon(liq, 'merge', xc(g[k]), mergeY);
+  });
   s += taps;
+  const f = flowFor(E, liq);
+  const mergers = N - G;
+  if (N > 1) s += `<text x="${W - 8}" y="11" text-anchor="end" font-size="9.5" fill="${BP.text}">논리 배치도 — 실제 매장지는 흩어져 있으니 가까운 것끼리 같은 줄로</text>`;
   s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">합계 ${fmt(E)}${unitOf(liq)}</text>`;
-  s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${N > 1 ? (liq ? ' · 접합 ' + (N - 1) + '곳' : ' · 합류기 ' + (N - 1) + '개') : ''}</text>`;
-  if (f.lines > 1) s += `<text x="${lineX1}" y="${H - 22}" font-size="9.5" font-weight="700" fill="#ffc94d">⚠ 한 줄로 다 합치면 병목 — ${f.lines}줄로 나눠 나르세요 (줄당 채굴기 ~${Math.ceil(N / f.lines)}대씩 묶어 합류)</text>`;
+  s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${G > 1 ? `${liq ? '파이프' : '벨트'} Mk.${f.mk} × ${G}줄` : flowName(f)}${mergers > 0 ? (liq ? ' · 접합 ' + mergers + '곳' : ' · 합류기 ' + mergers + '개') : (N > 1 ? (liq ? ' · 접합 0곳' : ' · 합류기 0개 (각자 벨트)') : '')}</text>`;
+  if (G > 1) s += `<text x="${x0}" y="${H - 6}" font-size="9.5" font-weight="700" fill="#ffc94d">⚠ ${G}줄을 끝까지 합치지 말 것 — 한 줄 한계는 ${cap}${unitOf(liq)}입니다</text>`;
   return { s, W, H, outPort: { x: W - 180, y: mergeY, liq } };
 }
 
@@ -547,30 +573,46 @@ function auxPlans(ext, autoOnly) {
 /* 부수 원자재 채굴 배치도 (작은 추출 섹션, 매장지별 순도·클럭 표기) */
 function auxMineCore(pl) {
   const N = Math.min(pl.count, 10);
+  const cap = maxCap(pl.liq);
+  const allRates = pl.rows.map(r => r.rate);
+  const groupsAll = packGroups(allRates, cap);
+  const Gfull = groupsAll.length;
+  const mergersFull = pl.count - Gfull;
+  // 그려지는 부분(최대 10대)만 그룹 클리핑
+  const groups = groupsAll.map(g => g.filter(i => i < N)).filter(g => g.length);
+  const gIdxOf = [];
+  groups.forEach((g, gi) => g.forEach(i => gIdxOf[i] = gi));
+  const GAPX = groups.length > 1 ? 26 : 0;
   const cell = 84, x0 = 18, mergeY = 104;
-  const fPre = flowFor(pl.need - pl.shortage, pl.liq);
-  const H = fPre.lines > 1 ? 152 : 138;
-  const W = Math.max(x0 + N * cell + 250, 560);
+  const H = Gfull > 1 ? 152 : 138;
+  const xc = i => x0 + i * cell + cell / 2 + (gIdxOf[i] || 0) * GAPX;
+  const W = Math.max(xc(N - 1) + cell / 2 + 250, 560);
   let s = '', taps = '';
   for (let i = 0; i < N; i++) {
     const r = pl.rows[i];
-    const cx = x0 + i * cell + cell / 2;
+    const cx = xc(i);
     s += svgIcon(r.icon, cx - 19, 4, 38);
     s += `<text x="${cx}" y="${55}" text-anchor="middle" font-size="9" fill="${BP.text}">${r.puKo ? r.puKo + ' · ' : ''}${fmt(r.clock)}%</text>`;
     s += `<text x="${cx}" y="${69}" text-anchor="middle" font-size="10" font-weight="700" fill="${BP.bright}">${fmt(r.rate)}${unitOf(pl.liq)}</text>`;
     s += `<line x1="${cx}" y1="73" x2="${cx}" y2="${mergeY}" stroke="${BP.drop}" stroke-width="2"/>`;
-    if (pl.count > 1 && i > 0) taps += tapIcon(pl.liq, 'merge', cx, mergeY);
   }
   const col = pl.liq ? BP.pipe : BP.belt;
-  const f = flowFor(pl.need - pl.shortage, pl.liq);
-  const x1 = x0 + cell / 2;
-  s += `<line x1="${x1}" y1="${mergeY}" x2="${W - 190}" y2="${mergeY}" stroke="${col}" stroke-width="${pl.liq ? 5 : 3}" ${pl.liq ? '' : 'stroke-dasharray="7 4"'}/>`;
-  s += `<polygon points="${W - 190},${mergeY - 5} ${W - 180},${mergeY} ${W - 190},${mergeY + 5}" fill="${col}"/>`;
+  groups.forEach(g => {
+    const a = g[0], b = g[g.length - 1];
+    const gSum = g.reduce((t, i) => t + allRates[i], 0);
+    const segX2 = xc(b) + 30;
+    s += `<line x1="${xc(a)}" y1="${mergeY}" x2="${segX2}" y2="${mergeY}" stroke="${col}" stroke-width="${pl.liq ? 5 : 3}" ${pl.liq ? '' : 'stroke-dasharray="7 4"'}/>`;
+    s += `<polygon points="${segX2},${mergeY - 5} ${segX2 + 9},${mergeY} ${segX2},${mergeY + 5}" fill="${col}"/>`;
+    if (groups.length > 1) s += `<text x="${(xc(a) + segX2) / 2}" y="${mergeY + 14}" text-anchor="middle" font-size="9" fill="${BP.text}">${fmt(gSum)}${unitOf(pl.liq)}</text>`;
+    for (let k = 1; k < g.length; k++) taps += tapIcon(pl.liq, 'merge', xc(g[k]), mergeY);
+  });
   s += taps;
-  if (pl.count > N) s += `<text x="${x0 + N * cell + 4}" y="36" font-size="13" font-weight="700" fill="${BP.text}">… ×${pl.count}</text>`;
+  if (pl.count > N) s += `<text x="${xc(N - 1) + cell / 2 + 4}" y="36" font-size="13" font-weight="700" fill="${BP.text}">… ×${pl.count}</text>`;
+  if (pl.count > 1) s += `<text x="${W - 8}" y="11" text-anchor="end" font-size="9.5" fill="${BP.text}">논리 배치도 — 가까운 매장지끼리 같은 줄로 묶으세요</text>`;
+  const f = flowFor(pl.need - pl.shortage, pl.liq);
   s += `<text x="${W - 172}" y="${mergeY - 2}" font-size="11" font-weight="700" fill="${BP.accent}">${fmt(pl.need - pl.shortage)}${unitOf(pl.liq)}</text>`;
-  s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${flowName(f)}${pl.count > 1 ? (pl.liq ? ' · 접합 ' + (pl.count - 1) + '곳' : ' · 합류기 ' + (pl.count - 1) + '개') : ''}</text>`;
-  if (f.lines > 1) s += `<text x="${x1}" y="${H - 6}" font-size="9.5" font-weight="700" fill="#ffc94d">⚠ 한 줄로 다 합치면 병목 — ${f.lines}줄로 나눠 나르세요 (줄당 ~${Math.ceil(pl.count / f.lines)}대씩)</text>`;
+  s += `<text x="${W - 172}" y="${mergeY + 12}" font-size="10" fill="${BP.text}">${Gfull > 1 ? `${pl.liq ? '파이프' : '벨트'} Mk.${f.mk} × ${Gfull}줄` : flowName(f)}${mergersFull > 0 ? (pl.liq ? ' · 접합 ' + mergersFull + '곳' : ' · 합류기 ' + mergersFull + '개') : (pl.count > 1 ? (pl.liq ? ' · 접합 0곳' : ' · 합류기 0개 (각자 벨트)') : '')}</text>`;
+  if (Gfull > 1) s += `<text x="${x0}" y="${H - 6}" font-size="9.5" font-weight="700" fill="#ffc94d">⚠ ${Gfull}줄을 끝까지 합치지 말 것 — 한 줄 한계는 ${cap}${unitOf(pl.liq)}입니다</text>`;
   s += pl.shortage > 1e-6
     ? `<text x="${x0}" y="132" font-size="9.5" font-weight="700" fill="#ff6b5e">⚠ ${fmt(pl.shortage)}${unitOf(pl.liq)} 부족 — 매장지 추가 필요</text>`
     : `<text x="${x0}" y="132" font-size="9.5" fill="#ffc94d">${pl.name} 외 ×${pl.count} · 필요량에 맞춰 클럭 자동 배분</text>`;
