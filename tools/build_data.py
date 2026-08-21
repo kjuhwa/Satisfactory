@@ -60,7 +60,8 @@ items = {}
 for cn, it in d['items'].items():
     if cn in used_items:
         items[cn] = {'n': it['name'], 'ko': ko_item(cn) or it['name'],
-                     'liq': it['liquid'], 'pts': it.get('sinkPoints', 0)}
+                     'liq': it['liquid'], 'pts': it.get('sinkPoints', 0),
+                     'st': it.get('stackSize', 100)}
 
 machines = {}
 for cn in used_machines:

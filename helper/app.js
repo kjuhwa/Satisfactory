@@ -46,6 +46,7 @@ let state = {
   auxDeps: {},           // 부수 원자재 매장지 직접 구성 (item id -> [{purity, mk?}])
   mission: null,         // 미션 모드 {i: missionList 인덱스, min: 목표 분}
   gen: 'coal',           // 발전소 계획 방식 (none|coal|fuel|turbo|nuclear)
+  trainOn: {},           // 기차 수송 구간 (item id -> true: 이 품목의 출하를 기차로)
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
@@ -63,6 +64,7 @@ state.maxPipe = state.maxPipe || 2;
 state.auxPurity = state.auxPurity || {};
 state.auxDeps = state.auxDeps || {};
 state.gen = state.gen || 'coal';
+state.trainOn = state.trainOn || {};
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
@@ -343,6 +345,23 @@ function mineDiagram() {
   const c = mineDiagramCore();
   return `<div class="bp"><svg viewBox="0 0 ${c.W} ${c.H}" style="min-width:${Math.min(c.W, 780)}px">${c.s}</svg></div>`;
 }
+/* ---------- 기차 수송 (티어 6) ----------
+ * 화물칸(고체) = 32칸 × 스택 크기, 유체 화물칸 = 1,600㎥. 왕복 5분 가정. */
+const TRAIN_RT = 5;   // 왕복 시간 가정(분)
+function trainInfo(item, rate) {
+  const liq = isLiq(item);
+  const cap = liq ? 1600 : 32 * ((D.items[item] && D.items[item].st) || 100);
+  const cars = Math.max(1, Math.ceil(rate * TRAIN_RT / cap - 1e-9));
+  return { liq, cap, cars };
+}
+function trainTip(item, rate) {
+  const t = trainInfo(item, rate);
+  return `<div class="tip">🚆 <b>기차 수송</b> — 출력을 화물역에 적재해 소비지 역으로 운송.
+    ${t.liq ? `유체 화물칸 1칸 = 1,600㎥` : `화물칸 1칸 = 32칸 × 스택 ${(D.items[item] && D.items[item].st) || 100} = ${fmt(t.cap)}개`}
+    → 왕복 ${TRAIN_RT}분 가정 시 <b>화물칸 ${t.cars}칸</b> 편성이면 ${fmt(rate)}${unitOf(t.liq)}을 소화합니다
+    (거리가 멀어 왕복이 길어지면 화물칸·열차를 비례해 추가, 양방향 역은 복선+신호 필수)</div>`;
+}
+
 /* 추출기들을 벨트/파이프 한 줄 용량 이하로 순서대로 묶는다 (그룹별 독립 줄) */
 function packGroups(rates, cap) {
   const groups = [];
@@ -650,7 +669,11 @@ function composedDiagram(stageInfo, reused, oreUsed, plans, includeMain = true) 
     if (!sec.info) continue;
     for (const p of sec.core.inPorts) {
       const src = secs.find(x => x.item === p.ing && x !== sec);
-      if (src) conns.push({ src, dst: sec, port: p, recycle: false, label: koOf(p.ing) });
+      if (src) {
+        const outQty = sec.info.ml.r.out.find(o => o[0] === sec.item)[1];
+        const q = sec.info.ml.r.in.find(([ing]) => ing === p.ing)[1];
+        conns.push({ src, dst: sec, port: p, recycle: false, label: koOf(p.ing), rate: sec.info.t.rate / outQty * q });
+      }
     }
   }
   for (const [k, amt] of Object.entries(reused)) {
@@ -674,11 +697,21 @@ function composedDiagram(stageInfo, reused, oreUsed, plans, includeMain = true) 
     const ix = c.port.x, iy = c.dst.y0 + c.port.y;
     const lx = laneX(lanes.get(c.src.key));
     const gy = c.dst.y0 - 12 - (c.dst.core.inPorts.indexOf(c.port)) * 8;   // 소비 섹션 위 빈틈에서 가로 이동
-    const col = c.recycle ? '#6fd68a' : (c.port.liq ? BP.pipe : BP.belt);
-    const dash = c.recycle ? 'stroke-dasharray="3 4"' : (c.port.liq ? '' : 'stroke-dasharray="7 5"');
-    wires += `<path d="M ${ox} ${oy} H ${lx} V ${gy} H ${ix - 10} V ${iy} H ${ix}" fill="none" stroke="${col}" stroke-width="${c.port.liq && !c.recycle ? 4 : 2.5}" ${dash} opacity=".9"/>`;
-    wires += `<polygon points="${ix - 7},${iy - 4} ${ix},${iy} ${ix - 7},${iy + 4}" fill="${col}"/>`;
-    wires += `<text x="${lx - 6}" y="${gy - 4}" text-anchor="end" font-size="9.5" font-weight="700" fill="${c.recycle ? '#6fd68a' : BP.bright}" paint-order="stroke" stroke="#1b1813" stroke-width="3">${c.label} ⟶</text>`;
+    const byTrain = !c.recycle && !!state.trainOn[c.src.item];
+    const col = c.recycle ? '#6fd68a' : (byTrain ? '#c8cfe0' : (c.port.liq ? BP.pipe : BP.belt));
+    const dash = c.recycle ? 'stroke-dasharray="3 4"' : (byTrain ? '' : (c.port.liq ? '' : 'stroke-dasharray="7 5"'));
+    const width = byTrain ? 4.5 : (c.port.liq && !c.recycle ? 4 : 2.5);
+    wires += `<path d="M ${ox} ${oy} H ${lx} V ${gy} H ${ix - 10} V ${iy} H ${ix}" fill="none" stroke="${col}" stroke-width="${width}" ${dash} opacity=".9"/>`;
+    if (byTrain) {
+      // 철로 침목 무늬 + 양끝 화물역
+      wires += `<path d="M ${ox} ${oy} H ${lx} V ${gy} H ${ix - 10} V ${iy} H ${ix}" fill="none" stroke="#5a5f6e" stroke-width="1.6" stroke-dasharray="2 8"/>`;
+      wires += `<rect x="${ox - 4}" y="${oy - 8}" width="16" height="16" rx="3" fill="#39404f" stroke="#c8cfe0"/><text x="${ox + 4}" y="${oy + 4}" text-anchor="middle" font-size="10">🚉</text>`;
+      wires += `<rect x="${ix - 22}" y="${iy - 8}" width="16" height="16" rx="3" fill="#39404f" stroke="#c8cfe0"/><text x="${ix - 14}" y="${iy + 4}" text-anchor="middle" font-size="10">🚉</text>`;
+      const ti = trainInfo(c.src.item, null);
+      void ti;
+    }
+    const tlabel = byTrain ? `🚆 ${c.label} · 화물칸 ${trainInfo(c.src.item, c.rate || 0).cars}칸` : `${c.label} ⟶`;
+    wires += `<text x="${lx - 6}" y="${gy - 4}" text-anchor="end" font-size="9.5" font-weight="700" fill="${c.recycle ? '#6fd68a' : (byTrain ? '#c8cfe0' : BP.bright)}" paint-order="stroke" stroke="#1b1813" stroke-width="3">${tlabel}</text>`;
   }
   const H = y - GAP + 14;
   return `<div class="bp"><svg viewBox="0 0 ${W} ${H}" style="min-width:${Math.min(W, 1200)}px">${wires}${body}</svg></div>`;
@@ -866,7 +899,9 @@ function auxCardsHtml(planned) {
         <span class="badge good">${pl.name} 외 ×${pl.count}</span>
         ${flowBadge(pl.need - pl.shortage, pl.liq)}
         <span class="badge">⚡ ${fmt(pl.power)} MW</span>
-        ${!pl.manual ? `<button class="ghost mini" data-auxman="${pl.id}">매장지 직접 구성 (여러 개)</button>` : ''}</div>
+        ${!pl.manual ? `<button class="ghost mini" data-auxman="${pl.id}">매장지 직접 구성 (여러 개)</button>` : ''}
+        <button class="ghost mini" data-train="${pl.id}">${state.trainOn[pl.id] ? '↩ 벨트 수송으로' : '🚆 기차로 수송'}</button></div>
+      ${state.trainOn[pl.id] ? trainTip(pl.id, pl.need - pl.shortage) : ''}
       ${worldWarn(pl)}
       ${pl.shortage > 1e-6 ? `<div class="tip" style="color:var(--bad)">⚠ <b>${fmt(pl.shortage)}${unitOf(pl.liq)} 부족</b> — 매장지를 추가하거나 순도·채굴기를 올리세요. 부족한 만큼 이 재료를 쓰는 라인 전체가 감속합니다.</div>` : ''}
     </div>`;
@@ -943,7 +978,9 @@ function stageCardsHtml(totals) {
         <span class="badge ${ml.exact ? 'good' : ''}">${ml.count}대 × ${fmt(ml.clock)}%${ml.exact ? ' 딱 맞음 ✨' : ''}</span>
         ${flowBadge(t.rate, isLiq(item))}
         <span class="badge">⚡ ${fmt(ml.power)} MW</span>
-        ${ml.count > 1 ? `<button class="ghost mini" data-nomerge="${item}">${state.noMerge[item] ? '↩ 한 줄로 모으기' : '합류기 생략 보기'}</button>` : ''}</div>
+        ${ml.count > 1 ? `<button class="ghost mini" data-nomerge="${item}">${state.noMerge[item] ? '↩ 한 줄로 모으기' : '합류기 생략 보기'}</button>` : ''}
+        <button class="ghost mini" data-train="${item}">${state.trainOn[item] ? '↩ 벨트 수송으로' : '🚆 기차로 수송'}</button></div>
+      ${state.trainOn[item] ? trainTip(item, t.rate) : ''}
       ${distGuide(item, ml, t.rate)}
       ${bpTip(ml)}
       ${altSuggest(item)}
@@ -1004,6 +1041,11 @@ function attachHandlers(box, planned) {
   }));
   const gs = box.querySelector('#sel-gen');
   if (gs) gs.addEventListener('change', () => { state.gen = gs.value; update(); });
+  box.querySelectorAll('button[data-train]').forEach(b => b.addEventListener('click', () => {
+    const it = b.dataset.train;
+    state.trainOn[it] = !state.trainOn[it];
+    update();
+  }));
   const st = box.querySelector('button[data-suggest-time]');
   if (st) st.addEventListener('click', () => {
     const sug = suggestMissionTime();
@@ -1221,7 +1263,7 @@ function renderMission() {
   if (sc.stageInfo.length) {
     html += `<div class="stage">
       <div class="head"><span class="t">🗺 전체 배치도</span>
-        <span class="hint">원자재 채굴부터 미션 물품까지 — 점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span></span></div>
+        <span class="hint">원자재 채굴부터 미션 물품까지 — 점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 기차 지정은 각 카드의 🚆 버튼</span></div>
       ${composedDiagram(sc.stageInfo, reused, 0, plans, false)}
     </div>`;
   }
@@ -1306,7 +1348,7 @@ function renderResult() {
     html += `<div class="stage">
       <div class="head"><span class="t">🗺 전체 배치도</span>
         <span class="hint">위의 채굴·단계 배치도를 그대로 이어 붙인 전체 그림 — 단계 사이 연결선은 오른쪽 레인을 타고 내려갑니다.
-        점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span></span></div>
+        점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 기차 지정은 각 카드의 🚆 버튼</span></div>
       ${composedDiagram(stageInfo, reused, oreUsed, plans)}
     </div>`;
   }
