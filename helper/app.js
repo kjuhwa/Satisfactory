@@ -50,6 +50,9 @@ let state = {
   transMode: {},         // 수송 방식 (item id -> 'train' | 'drone', 없으면 벨트/파이프)
   sloop: {},             // 솜머슬룹 증폭 (item id -> true: 그 단계 기계 만충)
   apa: 'none',           // 외계 전력 증폭기 (none|plain|fueled)
+  cart: [],              // 커스텀 장바구니 [{item, rate}] — 다중 목표 공장
+  altMode: 'all',        // 대체 레시피 고려 범위 (all|owned)
+  ownedAlts: {},         // 보유한 대체 레시피 (recipe id -> true)
 };
 try {
   const saved = JSON.parse(localStorage.getItem('sfy-helper') || 'null');
@@ -72,6 +75,9 @@ state.transMode = state.transMode || {};
 for (const k in state.trainOn) if (state.trainOn[k] && !state.transMode[k]) state.transMode[k] = 'train';
 state.sloop = state.sloop || {};
 state.apa = state.apa || 'none';
+state.cart = state.cart || [];
+state.altMode = state.altMode || 'all';
+state.ownedAlts = state.ownedAlts || {};
 const save = () => localStorage.setItem('sfy-helper', JSON.stringify(state));
 
 /* ---------- 벨트 · 파이프 (해금된 티어만 사용) ---------- */
@@ -880,7 +886,8 @@ function machineLine(item, rate) {
   const count = Math.ceil(rate / per - 1e-9);
   const clock = rate / (count * per) * 100;
   const m = D.machines[r.machine] || { ko: r.machine, power: 0 };
-  const power = m.power * count * Math.pow(clock / 100, EXP) * amp * amp;   // 슬룹 만충 = 전력 ×4
+  const basePower = r.power !== undefined ? r.power : m.power;   // 가변 전력 기계(가속기 등)는 레시피 평균
+  const power = basePower * count * Math.pow(clock / 100, EXP) * amp * amp;   // 슬룹 만충 = 전력 ×4
   // 조각으로 대수 줄이기 대안 (기계 출력 포트도 하나 — 한 대 출력이 벨트 한도를 넘지 않게)
   let minCount = Math.ceil(rate / (per * 2.5) - 1e-9);
   minCount = Math.max(minCount, Math.ceil(rate / maxCap(isLiq(item)) - 1e-9));
@@ -1032,19 +1039,27 @@ function altSuggest(item) {
   const cur = recipeOf(item).id;
   const base = orePerUnit(state.target).ore;
   if (base <= 1e-12) return '';
-  let best = null;
+  let best = null, bestUnowned = null;
   for (const r of list) {
     if (r.id === cur) continue;
     state.recipeSel[item] = r.id;
     const o = orePerUnit(state.target).ore;
-    if (o > 1e-12 && (!best || o < best.o)) best = { r, o };
+    if (o > 1e-12) {
+      const owned = !r.alt || state.altMode === 'all' || state.ownedAlts[r.id];
+      if (owned) { if (!best || o < best.o) best = { r, o }; }
+      else if (!bestUnowned || o < bestUnowned.o) bestUnowned = { r, o };
+    }
   }
   state.recipeSel[item] = cur;   // 원복
+  let html = '';
   if (best && best.o < base * 0.95) {
-    return `<div class="tip">💡 레시피 추천: <b>${best.r.alt ? '★ ' : ''}${best.r.ko || best.r.name}</b>로 바꾸면
+    html += `<div class="tip">💡 레시피 추천: <b>${best.r.alt ? '★ ' : ''}${best.r.ko || best.r.name}</b>로 바꾸면
       ${koOf(state.res)} 소모 <b>−${fmt((1 - best.o / base) * 100)}%</b> (드롭다운에서 선택)</div>`;
   }
-  return '';
+  if (state.altMode === 'owned' && bestUnowned && bestUnowned.o < base * 0.95 && (!best || bestUnowned.o < best.o)) {
+    html += `<div class="tip hint">🔒 미보유 ★${bestUnowned.r.ko || bestUnowned.r.name} 해금 시 ${koOf(state.res)} −${fmt((1 - bestUnowned.o / base) * 100)}% — 하드 드라이브 우선순위 참고</div>`;
+  }
+  return html;
 }
 
 /* 공정 단계 카드들: totals → {html, stages, stageInfo, power} */
@@ -1058,7 +1073,7 @@ function stageCardsHtml(totals) {
     power += ml.power;
     const recipes = byOut[item];
     const selHtml = recipes.length > 1
-      ? `<select data-item="${item}">${recipes.map(r => `<option value="${r.id}" ${r.id === ml.r.id ? 'selected' : ''}>${r.alt ? '★ ' : ''}${r.ko || r.name}</option>`).join('')}</select>`
+      ? `<select data-item="${item}">${recipes.map(r => `<option value="${r.id}" ${r.id === ml.r.id ? 'selected' : ''}>${r.alt ? (state.altMode === 'owned' && !state.ownedAlts[r.id] ? '🔒★ ' : '★ ') : ''}${r.ko || r.name}</option>`).join('')}</select>`
       : '';
     html += `<div class="stage">
       <div class="head">${iconImg(item, 34)}<span class="t">${koOf(item)}</span>${selHtml}
@@ -1084,10 +1099,44 @@ function stageCardsHtml(totals) {
   return { html, stages, stageInfo, power, sloops };
 }
 
+/* 전체 배치도 SVG → PNG 다운로드 (아이콘을 data URI로 인라인) */
+async function exportOverviewPng(card) {
+  const svgEl = card.querySelector('.bp svg');
+  if (!svgEl) return;
+  let src = new XMLSerializer().serializeToString(svgEl);
+  const hrefs = [...new Set([...src.matchAll(/href="(\.\.\/game\/icons\/[^"]+)"/g)].map(m => m[1]))];
+  for (const h of hrefs) {
+    try {
+      const b = await fetch(h).then(r => r.blob());
+      const durl = await new Promise(res => { const fr = new FileReader(); fr.onload = () => res(fr.result); fr.readAsDataURL(b); });
+      src = src.split(`href="${h}"`).join(`href="${durl}"`);
+    } catch (e) { }
+  }
+  const vb = svgEl.viewBox.baseVal;
+  src = src.replace(/<svg /, `<svg width="${vb.width}" height="${vb.height}" `);
+  const url = URL.createObjectURL(new Blob([src], { type: 'image/svg+xml' }));
+  const img = new Image();
+  await new Promise((res, rej) => { img.onload = res; img.onerror = rej; img.src = url; });
+  const scale = 2;
+  const cv = document.createElement('canvas');
+  cv.width = vb.width * scale; cv.height = vb.height * scale;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#1b1813';
+  ctx.fillRect(0, 0, cv.width, cv.height);
+  ctx.drawImage(img, 0, 0, cv.width, cv.height);
+  URL.revokeObjectURL(url);
+  const a = document.createElement('a');
+  a.download = 'satisfactory-blueprint.png';
+  a.href = cv.toDataURL('image/png');
+  a.click();
+}
+
 /* 결과 영역 공용 이벤트 배선 (레시피/합류기/부수 매장지) */
 function attachHandlers(box, planned) {
   box.querySelectorAll('select[data-item]').forEach(s => s.addEventListener('change', () => {
     state.recipeSel[s.dataset.item] = s.value;
+    const rec = D.recipes.find(r => r.id === s.value);
+    if (rec && rec.alt) state.ownedAlts[s.value] = true;   // 직접 골랐으면 보유한 것
     update();
   }));
   box.querySelectorAll('button[data-nomerge]').forEach(b => b.addEventListener('click', () => {
@@ -1148,6 +1197,11 @@ function attachHandlers(box, planned) {
     state.trainOn[it] = sl.value === 'train';   // 구버전 호환
     update();
   }));
+  const png = box.querySelector('#btn-bp-png');
+  if (png) png.addEventListener('click', () => {
+    png.textContent = '⏳ 생성 중…';
+    exportOverviewPng(png.closest('.stage')).finally(() => { png.textContent = '🖼 PNG 저장'; });
+  });
   const st = box.querySelector('button[data-suggest-time]');
   if (st) st.addEventListener('click', () => {
     const sug = suggestMissionTime();
@@ -1199,8 +1253,33 @@ function powerPlan(factoryPower) {
     }
     const plans = auxPlans(extNeed, true).filter(pl => !pl.unplanned);
     const exPower = plans.reduce((a, pl) => a + pl.power, 0);
-    out = { g, n, need, gross: n * g.mw * (1 + ap.boost) + ap.flat, ap, apaSloops: state.apa !== 'none' ? 10 : 0, chainStages, plans, chainPower, exPower, bypro: chain ? chain.bypro : {} };
-    const newExtra = chainPower + exPower;
+    // 원자력: 폐기물 재처리 체인 (폐기물 → 플루토늄 연료봉)
+    let repro = null, reproPower = 0;
+    if (state.gen === 'nuclear' && n > 0) {
+      const wasteRate = n * 10;   // 발전소당 우라늄 폐기물 10/분
+      const probe = solveMission([{ item: 'Desc_PlutoniumFuelRod_C', rate: 1 }]);
+      const wastePer = probe.ext['Desc_NuclearWaste_C'] || 0;
+      if (wastePer > 1e-9) {
+        const rodRate = wasteRate / wastePer;
+        const rchain = solveMission([{ item: 'Desc_PlutoniumFuelRod_C', rate: rodRate }]);
+        const rStages = [];
+        for (const [item, t] of Object.entries(rchain.totals)) {
+          if (t.rate <= 1e-6) continue;
+          const ml = machineLine(item, t.rate);
+          reproPower += ml.power;
+          rStages.push({ item, rate: t.rate, ml });
+        }
+        const rExt = {};
+        for (const k in rchain.ext) if (k !== 'Desc_NuclearWaste_C' && rchain.ext[k] > 1e-6) rExt[k] = rchain.ext[k];
+        const rPlans = auxPlans(rExt, true).filter(pl => !pl.unplanned);
+        reproPower += rPlans.reduce((a, pl) => a + pl.power, 0);
+        repro = { wasteRate, rodRate, stages: rStages, plans: rPlans,
+          burnPlants: Math.ceil(rodRate / 0.1 - 1e-9), burnMW: Math.ceil(rodRate / 0.1 - 1e-9) * 2500,
+          puWaste: rodRate * 10 };
+      }
+    }
+    out = { g, n, need, gross: n * g.mw * (1 + ap.boost) + ap.flat, ap, apaSloops: state.apa !== 'none' ? 10 : 0, chainStages, plans, chainPower, exPower: exPower + reproPower, repro, bypro: chain ? chain.bypro : {} };
+    const newExtra = chainPower + exPower + reproPower;
     if (Math.abs(newExtra - extra) < 0.5) break;
     extra = newExtra;
   }
@@ -1239,7 +1318,15 @@ function powerPlanHtml(factoryPower) {
     }
     const bp = Object.entries(pp.bypro || {}).filter(([, v]) => v > 1e-6);
     if (bp.length) body += `<div class="tip">연료 라인 부산물: ${bp.map(([k, v]) => `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}`).join(' · ')} — 재활용 또는 싱크</div>`;
-    if (state.gen === 'nuclear') body += `<div class="tip" style="color:var(--warn)">☢ 우라늄 폐기물이 계속 쌓입니다 — 소각 불가, 재처리 라인 또는 보관 계획 필수</div>`;
+    if (pp.repro) {
+      body += `<div class="tip">☢ <b>폐기물 재처리 계획</b> — 우라늄 폐기물 ${fmt(pp.repro.wasteRate)}/분 전량을 플루토늄 연료봉 ${fmt(pp.repro.rodRate)}/분으로 재처리:
+        ${pp.repro.stages.map(cs => `${iconImg(cs.item, 14)} ${koOf(cs.item)} — ${cs.ml.m.ko} <b>×${cs.ml.count}</b>`).join(' → ')}</div>`;
+      if (pp.repro.plans.length) body += `<div class="tip">☢ 재처리 추가 원자재: ${pp.repro.plans.map(pl => `${koOf(pl.id)} ${fmt(pl.need)}${unitOf(pl.liq)} (${pl.name} ×${pl.count})`).join(' · ')}</div>`;
+      body += `<div class="tip">☢ 플루토늄 연료봉을 태우면 발전소 <b>${pp.repro.burnPlants}대</b>에서 <b>+${pp.repro.burnMW.toLocaleString('ko-KR')} MW</b> 추가 —
+        태우면 플루토늄 폐기물 ${fmt(pp.repro.puWaste)}/분이 남고(최종 보관만 가능), 안 태우면 연료봉 자체를 싱크(153,184pt)할 수 있습니다</div>`;
+    } else if (state.gen === 'nuclear') {
+      body += `<div class="tip" style="color:var(--warn)">☢ 우라늄 폐기물이 계속 쌓입니다 — 소각 불가, 재처리 라인 또는 보관 계획 필수</div>`;
+    }
   } else if (state.gen !== 'none') {
     body = `<div class="tip">전력 수요가 없어 계산할 것이 없습니다.</div>`;
   }
@@ -1305,6 +1392,55 @@ function suggestMissionTime() {
   let sug = min * maxPl.count / 10;
   sug = sug >= 60 ? Math.ceil(sug / 30) * 30 : Math.ceil(sug / 5) * 5;   // 30분/5분 단위 올림
   return sug;
+}
+
+/* 커스텀 장바구니: 원하는 품목 여러 개를 분당 속도로 담아 한 공장으로 설계 */
+function renderCart() {
+  const box = $('result');
+  const targets = state.cart.filter(c => c.rate > 0);
+  if (!targets.length) { box.innerHTML = ''; return; }
+  const { totals, ext, bypro, reused } = solveMission(targets);
+  let html = `<div class="rsum">🧺 <b>장바구니 공장</b> — ` +
+    targets.map(c => `${iconImg(c.item, 18)} <b>${koOf(c.item)} ${fmt(c.rate)}${unitOf(isLiq(c.item))}</b>`).join(' · ') +
+    `<br><span class="hint">담은 품목 전부를 동시에 생산하는 공장입니다. 1번 패널의 매장지 대신 모든 원자재를 아래에서 계획합니다.</span></div>`;
+  const plans = auxPlans(ext);
+  const planned = plans.filter(p => !p.unplanned);
+  if (planned.length) {
+    html += `<div class="rsum">원자재 채굴 계획: ` + planned.map(p =>
+      `<b>${koOf(p.id)} ${fmt(p.need)}${unitOf(p.liq)}</b> <span class="hint">(${p.name} ×${p.count}${p.shortage > 1e-6 ? ' · <span style="color:var(--bad)">부족!</span>' : ''})</span>`).join(' · ');
+    const reList = Object.entries(reused).filter(([, v]) => v > 1e-6);
+    if (reList.length) html += `<br>♻ 부산물 재사용: ` + reList.map(([k, v]) => `<b>${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}</b>`).join(' · ');
+    const bpList = Object.entries(bypro).map(([k, v]) => [k, v - (reused[k] || 0)]).filter(([, v]) => v > 1e-6);
+    if (bpList.length) html += `<br>잉여 부산물: ` + bpList.map(([k, v]) => {
+      const pts = D.items[k] && D.items[k].pts;
+      const note = isLiq(k) ? ' <span class="hint">(싱크 불가)</span>' : (pts ? ` <span class="hint">(싱크 ${fmt(v * pts)}pt/분)</span>` : '');
+      return `${koOf(k)} ${fmt(v)}${unitOf(isLiq(k))}${note}`;
+    }).join(' · ');
+    html += `</div>`;
+  }
+  const unplanned = plans.filter(p => p.unplanned);
+  if (unplanned.length) {
+    html += `<div class="rsum">별도 라인 필요: ` + unplanned.map(p =>
+      `<span class="ext">${koOf(p.id)} ${fmt(p.need)}${unitOf(isLiq(p.id))}</span>`).join(' · ') + `</div>`;
+  }
+  html += auxCardsHtml(planned);
+  const sc = stageCardsHtml(totals);
+  html += sc.html;
+  if (sc.stageInfo.length) {
+    html += `<div class="stage">
+      <div class="head"><span class="t">🗺 전체 배치도</span><button class="ghost mini" id="btn-bp-png">🖼 PNG 저장</button>
+        <span class="hint">원자재 채굴부터 장바구니 품목까지 — 점선=벨트, 파랑=파이프, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span></span></div>
+      ${composedDiagram(sc.stageInfo, reused, 0, plans, false)}
+    </div>`;
+  }
+  const totalPower = planned.reduce((a, p) => a + p.power, 0) + sc.power;
+  const storN = Math.max(1, Math.ceil(totalPower * 0.2 / 100));
+  const sloopTotal = sc.sloops + (state.gen !== 'none' && state.apa !== 'none' ? 10 : 0);
+  html += `<div class="rsum">총 전력 (채굴 포함): <b>${fmt(totalPower)} MW</b>${sloopTotal > 0 ? ` · <span style="color:#c9a0ff">🌀 슬룹 ${sloopTotal}/${SLOOP_WORLD}${sloopTotal > SLOOP_WORLD ? ' <b style="color:var(--bad)">초과!</b>' : ''}</span>` : ''}
+    <span class="hint">· ⚡ 안정화: 전력 저장고 <b>${storN}개</b> + 구역별 전력 스위치 권장</span></div>`;
+  html += powerPlanHtml(totalPower);
+  box.innerHTML = html;
+  attachHandlers(box, planned);
 }
 
 function renderMission() {
@@ -1377,7 +1513,7 @@ function renderMission() {
   html += sc.html;
   if (sc.stageInfo.length) {
     html += `<div class="stage">
-      <div class="head"><span class="t">🗺 전체 배치도</span>
+      <div class="head"><span class="t">🗺 전체 배치도</span><button class="ghost mini" id="btn-bp-png">🖼 PNG 저장</button>
         <span class="hint">원자재 채굴부터 미션 물품까지 — 점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#d8b8f0">보라 점선 곡선+🛸=드론</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 수송 방식은 각 카드에서 선택</span></div>
       ${composedDiagram(sc.stageInfo, reused, 0, plans, false)}
     </div>`;
@@ -1463,7 +1599,7 @@ function renderResult() {
   // 🗺 전체 배치도 — 채굴부터 목표까지 한 장으로
   if (stageInfo.length) {
     html += `<div class="stage">
-      <div class="head"><span class="t">🗺 전체 배치도</span>
+      <div class="head"><span class="t">🗺 전체 배치도</span><button class="ghost mini" id="btn-bp-png">🖼 PNG 저장</button>
         <span class="hint">위의 채굴·단계 배치도를 그대로 이어 붙인 전체 그림 — 단계 사이 연결선은 오른쪽 레인을 타고 내려갑니다.
         점선=벨트, 파랑=파이프, <span style="color:#c8cfe0">회백 실선+🚉=기차</span>, <span style="color:#d8b8f0">보라 점선 곡선+🛸=드론</span>, <span style="color:#6fd68a">초록 ♻=부산물 재순환</span> · 수송 방식은 각 카드에서 선택</span></div>
       ${composedDiagram(stageInfo, reused, oreUsed, plans)}
@@ -1507,6 +1643,7 @@ function update() {
   $('sel-res').value = state.res;
   $('sel-belt').value = state.maxBelt;
   $('sel-pipe').value = state.maxPipe;
+  $('sel-altmode').value = state.altMode;
   $('sel-mission').value = state.mission ? String(state.mission.i) : '';
   if (state.mission) {
     const mt = $('sel-mtime');
@@ -1520,7 +1657,31 @@ function update() {
   buildDepRows();
   buildQuickTable();
   renderMineSummary();
-  if (state.mission) renderMission(); else renderResult();
+  renderCartList();
+  if (state.mission) renderMission();
+  else if (state.cart.length) renderCart();
+  else renderResult();
+}
+
+function renderCartList() {
+  const box = $('cart-list');
+  if (!box) return;
+  if (!state.cart.length) { box.innerHTML = ''; return; }
+  box.innerHTML = state.cart.map((c, i) =>
+    `<div class="dep-row">${iconImg(c.item, 20)} <b>${koOf(c.item)}</b>
+     <label>분당<input type="number" min="0.1" step="0.1" value="${c.rate}" data-cartrate="${i}" style="width:80px"></label>
+     <button class="ghost mini" data-cartdel="${i}">✕</button></div>`).join('') +
+    `<div class="row" style="margin-top:6px"><button class="ghost mini" id="btn-cart-clear">🧺 비우기</button></div>`;
+  box.querySelectorAll('input[data-cartrate]').forEach(inp => inp.addEventListener('change', () => {
+    state.cart[+inp.dataset.cartrate].rate = Math.max(0.1, +inp.value || 0.1);
+    update();
+  }));
+  box.querySelectorAll('button[data-cartdel]').forEach(b => b.addEventListener('click', () => {
+    state.cart.splice(+b.dataset.cartdel, 1);
+    update();
+  }));
+  const clr = box.querySelector('#btn-cart-clear');
+  if (clr) clr.addEventListener('click', () => { state.cart = []; update(); });
 }
 
 /* ---------- 초기화 ---------- */
@@ -1583,6 +1744,15 @@ $('inp-target').addEventListener('change', () => {
 $('btn-clear').addEventListener('click', () => {
   state.target = null; $('inp-target').value = ''; update();
 });
+$('btn-cart-add').addEventListener('click', () => {
+  const id = nameMap.get($('inp-target').value.trim());
+  if (!id) return;
+  const rate = Math.max(0.1, +$('cart-rate').value || 10);
+  const ex = state.cart.find(c => c.item === id);
+  if (ex) ex.rate += rate; else state.cart.push({ item: id, rate });
+  update();
+});
+$('sel-altmode').addEventListener('change', () => { state.altMode = $('sel-altmode').value; update(); });
 $('btn-share').addEventListener('click', async () => {
   const url = location.origin + location.pathname + '#s=' + btoa(unescape(encodeURIComponent(JSON.stringify(state))));
   try {

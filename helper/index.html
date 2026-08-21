@@ -48,7 +48,18 @@
         <datalist id="dl-items"></datalist>
       </label>
       <button id="btn-clear" class="ghost">지우기</button>
+      <label>분당
+        <input id="cart-rate" type="number" min="0.1" step="0.1" value="10" style="width:80px">
+      </label>
+      <button id="btn-cart-add" class="ghost">🧺 장바구니 담기</button>
+      <label>대체 레시피
+        <select id="sel-altmode">
+          <option value="all">전부 고려</option>
+          <option value="owned">보유한 것만</option>
+        </select>
+      </label>
     </div>
+    <div id="cart-list"></div>
     <p class="hint">캐고 있는 자원에서 만들 수 있는 아이템을 고르면, 채굴량 전부를 남김없이 소화하는
     단계별 기계 대수·클럭·벨트를 계산합니다.</p>
   </section>
